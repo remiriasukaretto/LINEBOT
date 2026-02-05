@@ -26,7 +26,7 @@ def callback():
 
     return 'OK'
 
-@handler.add(MessageEvent, message=TextMessage)
+@handler.add(MessageEvent)
 def handle_message(event):
     # ユーザーから送られてきたテキストをそのまま返す（オウム返し）
     line_bot_api.reply_message(

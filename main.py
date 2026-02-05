@@ -25,10 +25,13 @@ def callback():
 
     return 'OK'
 
-# テキストメッセージが届いた時だけ反応する
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
-    # 届いた文字をそのまま返信
+    # もし届いたメッセージに文字が入っていなかったら、無視して終了する
+    if not event.message or not hasattr(event.message, 'text') or not event.message.text:
+        return
+
+    # 文字がある時だけ返信する
     line_bot_api.reply_message(
         event.reply_token,
         TextSendMessage(text=event.message.text)

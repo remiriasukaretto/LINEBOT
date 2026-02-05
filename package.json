@@ -1,0 +1,14 @@
+{
+  "name": "ukind-system",
+  "version": "1.0.0",
+  "description": "LINEを用いた文化祭予約システム",
+  "main": "app.js",
+  "scripts": {
+    "start": "node app.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "@line/bot-sdk": "^7.5.2",
+    "pg": "^8.11.3"
+  }
+}

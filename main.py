@@ -1,23 +1,19 @@
 from flask import Flask, request, abort
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
-from linebot.models import (
-    MessageEvent, TextMessage, TextSendMessage,
-    StickerMessage, StickerSendMessage
-)
+from linebot.models import MessageEvent, TextMessage, TextSendMessage
 import os
 
 app = Flask(__name__)
 
 # --- 環境変数の読み込み ---
-# RenderのEnvironment Variablesで設定した名前に合わせています
+# RenderのEnvironment Variablesで設定した名前（Key）と一致させる
 CHANNEL_ACCESS_TOKEN = os.getenv('CHANNEL_ACCESS_TOKEN')
 CHANNEL_SECRET = os.getenv('CHANNEL_SECRET')
 
 line_bot_api = LineBotApi(CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
 
-# LINEからのWebhookを受け取る窓口
 @app.route("/callback", methods=['POST'])
 def callback():
     signature = request.headers['X-Line-Signature']
@@ -30,21 +26,19 @@ def callback():
 
     return 'OK'
 
-# テキストメッセージが届いた時の処理 (オウム返し)
+# 【既存】テキストメッセージへの反応
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
-    # もし中身が空なら何もしない（エラー防止）
-    if not event.message.text:
-        return
-
     line_bot_api.reply_message(
         event.reply_token,
         TextSendMessage(text=event.message.text)
     )
 
-# スタンプメッセージが届いた時の処理 (お辞儀ムーンを返す)
+# 【追加】スタンプメッセージへの反応
 @handler.add(MessageEvent, message=StickerMessage)
 def handle_sticker(event):
+    # スタンプが送られてきたら、特定のスタンプで返す
+    # package_id と sticker_id を変えることで好きなスタンプを送れます
     line_bot_api.reply_message(
         event.reply_token,
         StickerSendMessage(
@@ -54,6 +48,8 @@ def handle_sticker(event):
     )
 
 if __name__ == "__main__":
-    # Renderのポート番号設定に対応
+    # RenderはPORT環境変数を指定してくるのでそれを使う
     port = int(os.getenv("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
+
+    #seikou!!!!!

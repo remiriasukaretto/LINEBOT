@@ -6,18 +6,16 @@ import os
 
 app = Flask(__name__)
 
-# 1. LINE Developersで取得したアクセストークンとシークレットを設定
-# 本番運用では環境変数（os.getenv）から読み込むのが安全です
-YOUR_CHANNEL_ACCESS_TOKEN = 'ここにチャネルアクセストークンを貼り付け'
-YOUR_CHANNEL_SECRET = 'ここにチャネルシークレットを貼り付け'
+# --- 環境変数の読み込み ---
+# RenderのEnvironment Variablesで設定した名前（Key）と一致させる
+CHANNEL_ACCESS_TOKEN = os.getenv('CHANNEL_ACCESS_TOKEN')
+CHANNEL_SECRET = os.getenv('CHANNEL_SECRET')
 
-line_bot_api = LineBotApi(YOUR_CHANNEL_ACCESS_TOKEN)
-handler = WebhookHandler(YOUR_CHANNEL_SECRET)
+line_bot_api = LineBotApi(CHANNEL_ACCESS_TOKEN)
+handler = WebhookHandler(CHANNEL_SECRET)
 
-# LINE Developersの「Webhook URL」に https://〜/callback を設定します
 @app.route("/callback", methods=['POST'])
 def callback():
-    # 署名検証（LINEからのリクエストであることを確認）
     signature = request.headers['X-Line-Signature']
     body = request.get_data(as_text=True)
 
@@ -28,14 +26,15 @@ def callback():
 
     return 'OK'
 
-# テキストメッセージを受け取った時の挙動
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
-    # event.message.text がユーザーから送られた文字列
+    # ユーザーから送られてきたテキストをそのまま返す（オウム返し）
     line_bot_api.reply_message(
         event.reply_token,
-        TextSendMessage(text=event.message.text) # そのまま返す
+        TextSendMessage(text=event.message.text)
     )
 
 if __name__ == "__main__":
-    app.run(port=5000)
+    # RenderはPORT環境変数を指定してくるのでそれを使う
+    port = int(os.getenv("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)

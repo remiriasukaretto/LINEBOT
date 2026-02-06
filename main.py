@@ -23,6 +23,7 @@ handler = WebhookHandler(CHANNEL_SECRET)
 def get_connection():
     return psycopg2.connect(DATABASE_URL)
 
+# --- 管理画面系ルート ---
 @app.route("/login", methods=["GET", "POST"])
 def login():
     error = None
@@ -33,19 +34,11 @@ def login():
         error = "パスワードが違います"
     return render_template("login.html", error=error)
 
-@app.route("/logout")
-def logout():
-    session.pop("logged_in", None)
-    return redirect(url_for("login"))
-
 @app.route("/admin")
 def admin_page():
     if not session.get("logged_in"):
         return redirect(url_for("login"))
-    
-    # URLパラメータから更新秒数を取得（デフォルト5秒）
     interval = request.args.get("interval", 5, type=int)
-
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT id, user_id, message, status FROM reservations WHERE status IN ('waiting', 'called') ORDER BY id ASC")
@@ -71,13 +64,62 @@ def admin_finish(res_id):
     interval = request.args.get("interval", 5)
     with get_connection() as conn:
         with conn.cursor() as cur:
-            # 完了時にユーザーに通知を送る処理を追加
             cur.execute("SELECT user_id FROM reservations WHERE id = %s", (res_id,))
             user_id = cur.fetchone()[0]
             cur.execute("UPDATE reservations SET status = 'done' WHERE id = %s", (res_id,))
             conn.commit()
-            # 「確認できた（受付完了）」という旨を送信
             line_bot_api.push_message(user_id, TextSendMessage(text=f"ご来場ありがとうございました。番号 {res_id} 番の受付を完了しました。"))
     return redirect(url_for("admin_page", interval=interval))
 
-# (以下 LINE Webhook/process_reservation 等は以前と同じ)
+# --- LINE Webhook ---
+@app.route("/callback", methods=['POST'])
+def callback():
+    signature = request.headers['X-Line-Signature']
+    body = request.get_data(as_text=True)
+    try:
+        handler.handle(body, signature)
+    except InvalidSignatureError:
+        abort(400)
+    return 'OK'
+
+@handler.add(MessageEvent, message=TextMessage)
+def handle_message(event):
+    user_message = event.message.text.strip()
+    user_id = event.source.user_id
+    
+    # 予約処理を呼び出す
+    process_reservation(event, user_id, user_message)
+
+def process_reservation(event, user_id, user_message):
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                # 重複確認
+                cur.execute("SELECT id, status FROM reservations WHERE user_id = %s AND status IN ('waiting', 'called') ORDER BY id DESC LIMIT 1", (user_id,))
+                existing = cur.fetchone()
+                
+                if existing:
+                    res_id, status = existing
+                    if status == 'waiting':
+                        cur.execute("SELECT COUNT(*) FROM reservations WHERE status = 'waiting' AND id < %s", (res_id,))
+                        wait_count = cur.fetchone()[0]
+                        reply_text = f"【予約済み】\n番号: {res_id}\nあなたの前に {wait_count} 人待機中です。"
+                    else:
+                        reply_text = f"【呼出中】\n番号: {res_id}\n会場へお越しください！"
+                else:
+                    # 新規予約
+                    cur.execute("INSERT INTO reservations (user_id, message, status, created_at) VALUES (%s, %s, 'waiting', %s) RETURNING id", 
+                                (user_id, user_message, 'waiting', datetime.now()))
+                    new_id = cur.fetchone()[0]
+                    conn.commit()
+                    cur.execute("SELECT COUNT(*) FROM reservations WHERE status = 'waiting' AND id < %s", (new_id,))
+                    wait_count = cur.fetchone()[0]
+                    reply_text = f"【受付完了】\n番号: {new_id}\n現在 {wait_count} 人待ちです。"
+                
+                line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
+    except Exception as e:
+        print(f"Error in process_reservation: {e}")
+
+if __name__ == "__main__":
+    port = int(os.getenv("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)

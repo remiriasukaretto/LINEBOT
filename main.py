@@ -11,18 +11,24 @@ app = Flask(__name__)
 # --- 環境変数の読み込み ---
 CHANNEL_ACCESS_TOKEN = os.getenv('CHANNEL_ACCESS_TOKEN')
 CHANNEL_SECRET = os.getenv('CHANNEL_SECRET')
-DATABASE_URL = os.getenv('DATABASE_URL')  # RenderのInternal Database URL
+
+# DATABASE_URLの取得と修正
+# Renderは 'postgres://' を返すが、ライブラリによっては 'postgresql://' が必要なため置換する
+raw_db_url = os.getenv('DATABASE_URL')
+DATABASE_URL = raw_db_url.replace("postgres://", "postgresql://") if raw_db_url else None
 
 line_bot_api = LineBotApi(CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
 
 # --- データベース初期化関数 ---
 def init_db():
-    """テーブルが存在しない場合に作成する関数"""
+    if not DATABASE_URL:
+        print("【警告】DATABASE_URL環境変数が設定されていません！DB機能は無効です。")
+        return
+
     try:
         conn = psycopg2.connect(DATABASE_URL)
         cur = conn.cursor()
-        # messagesテーブルを作成（id, user_id, message, created_at）
         cur.execute("""
             CREATE TABLE IF NOT EXISTS messages (
                 id SERIAL PRIMARY KEY,
@@ -34,13 +40,12 @@ def init_db():
         conn.commit()
         cur.close()
         conn.close()
-        print("Database initialized.")
+        print("Database initialized successfully.")
     except Exception as e:
-        print(f"Error initializing database: {e}")
+        print(f"【初期化エラー】DB接続に失敗しました: {e}")
 
-# アプリ起動時にDB初期化を実行
-if DATABASE_URL:
-    init_db()
+# アプリ起動時にDB初期化
+init_db()
 
 @app.route("/callback", methods=['POST'])
 def callback():
@@ -56,35 +61,35 @@ def callback():
 
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
-    # メッセージ内容とユーザーIDを取得
     user_message = event.message.text
     user_id = event.source.user_id
     
     # --- データベースへの保存処理 ---
-    try:
-        if DATABASE_URL:
-            # DB接続
+    save_status = "保存失敗" # デフォルト
+    
+    if DATABASE_URL:
+        try:
             conn = psycopg2.connect(DATABASE_URL)
             cur = conn.cursor()
-            
-            # データの挿入 (SQLインジェクション対策のためプレースホルダ %s を使用)
             cur.execute(
                 "INSERT INTO messages (user_id, message, created_at) VALUES (%s, %s, %s)",
                 (user_id, user_message, datetime.now())
             )
-            
-            conn.commit() # 保存を確定
+            conn.commit()
             cur.close()
             conn.close()
             print(f"Message saved: {user_message} from {user_id}")
-    except Exception as e:
-        print(f"Database error: {e}")
-        # エラーが起きてもユーザーには返信できるように処理を続ける（必要に応じてエラーメッセージを変える）
+            save_status = "保存完了"
+        except Exception as e:
+            print(f"【保存エラー】: {e}")
+            save_status = "DBエラー"
+    else:
+        print("DATABASE_URLが設定されていないため保存できませんでした。")
+        save_status = "設定未完了"
 
     # --- ユーザーへの返信 ---
-    # ここでは「保存しました」＋オウム返し に変更していますが、
-    # 必要に応じて元のオウム返しのみに戻してください。
-    reply_text = f"受け付けました: {user_message}"
+    # デバッグ用にステータスを返信に含めています。本番では消してください。
+    reply_text = f"受け付けました（{save_status}）: {user_message}"
 
     line_bot_api.reply_message(
         event.reply_token,

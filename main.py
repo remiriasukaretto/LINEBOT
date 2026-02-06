@@ -8,44 +8,19 @@ from datetime import datetime
 
 app = Flask(__name__)
 
-# --- 環境変数の読み込み ---
 CHANNEL_ACCESS_TOKEN = os.getenv('CHANNEL_ACCESS_TOKEN')
 CHANNEL_SECRET = os.getenv('CHANNEL_SECRET')
-
-# .strip() を追加して、前後に入ってしまった不要なスペースを除去します
 OWNER_LINE_ID = os.getenv('OWNER_LINE_ID', '').strip()
 
-# DB URLの整形
 raw_db_url = os.getenv('DATABASE_URL')
-if raw_db_url and raw_db_url.startswith("postgres://"):
-    DATABASE_URL = raw_db_url.replace("postgres://", "postgresql://", 1)
-else:
-    DATABASE_URL = raw_db_url
+DATABASE_URL = raw_db_url.replace("postgres://", "postgresql://", 1) if raw_db_url else None
 
 line_bot_api = LineBotApi(CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
 
-def init_db():
-    if not DATABASE_URL: return
-    try:
-        conn = psycopg2.connect(DATABASE_URL)
-        cur = conn.cursor()
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS reservations (
-                id SERIAL PRIMARY KEY,
-                user_id VARCHAR(100) NOT NULL,
-                message TEXT,
-                status VARCHAR(20) DEFAULT 'waiting',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
-        """)
-        conn.commit()
-        cur.close()
-        conn.close()
-    except Exception as e:
-        print(f"Init DB Error: {e}")
-
-init_db()
+# --- データベース接続ヘルパー ---
+def get_connection():
+    return psycopg2.connect(DATABASE_URL)
 
 @app.route("/callback", methods=['POST'])
 def callback():
@@ -59,19 +34,10 @@ def callback():
 
 @handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
-    user_message = event.message.text.strip() # 前後の空白を消す
+    user_message = event.message.text.strip()
     user_id = event.source.user_id
     
-    # 【デバッグ用ログ】RenderのLogsタブで確認してください
-    print(f"DEBUG: 受信したID: {user_id}")
-    print(f"DEBUG: 設定されたOWNER_ID: {OWNER_LINE_ID}")
-    print(f"DEBUG: 一致するか: {user_id == OWNER_LINE_ID}")
-
-    if not DATABASE_URL:
-        return
-
-    # --- オーナー用コマンドの処理 ---
-    # もしIDが一致していればこちらに入るはず
+    # --- オーナー用コマンド ---
     if user_id == OWNER_LINE_ID:
         if user_message == "次":
             call_next_user(event)
@@ -79,77 +45,83 @@ def handle_message(event):
         elif user_message == "状況":
             show_status(event)
             return
-        elif user_message == "確認":
-            # 自分がオーナーとして認識されているか確認する専用コマンド
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text="あなたはオーナーとして正しく認識されています。"))
-            return
+        elif user_message.startswith("完了"):
+            # 「完了 12」のように送るとその番号を終了にする
+            parts = user_message.split()
+            if len(parts) > 1 and parts[1].isdigit():
+                finish_reservation(event, int(parts[1]))
+                return
 
-    # --- 一般ユーザー用：予約処理 ---
-    process_reservation(event, user_id, user_message)
+    # --- ユーザー用コマンド ---
+    if user_message == "キャンセル":
+        cancel_reservation(event, user_id)
+    else:
+        process_reservation(event, user_id, user_message)
+
+# --- 機能関数 ---
 
 def call_next_user(event):
-    try:
-        conn = psycopg2.connect(DATABASE_URL)
-        cur = conn.cursor()
-        cur.execute("SELECT id, user_id FROM reservations WHERE status = 'waiting' ORDER BY id ASC LIMIT 1")
-        target = cur.fetchone()
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id, user_id FROM reservations WHERE status = 'waiting' ORDER BY id ASC LIMIT 1")
+            target = cur.fetchone()
+            if target:
+                res_id, target_user_id = target
+                cur.execute("UPDATE reservations SET status = 'called' WHERE id = %s", (res_id,))
+                conn.commit()
+                line_bot_api.push_message(target_user_id, TextSendMessage(text=f"【順番が来ました】\n番号 {res_id} 番の方、会場へお越しください！"))
+                reply = f"番号 {res_id} を呼び出しました。"
+            else:
+                reply = "待機者はいません。"
+    line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
 
-        if target:
-            res_id, target_user_id = target
-            cur.execute("UPDATE reservations SET status = 'called' WHERE id = %s", (res_id,))
+def finish_reservation(event, res_id):
+    """オーナーが対応を完了した時に実行"""
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE reservations SET status = 'done' WHERE id = %s", (res_id,))
             conn.commit()
-            try:
-                line_bot_api.push_message(target_user_id, TextSendMessage(text=f"【順番が来ました！】\n受付番号 {res_id} 番の方、催事場へお越しください！"))
-                reply_text = f"番号 {res_id} 番の方を呼び出しました。"
-            except:
-                reply_text = f"番号 {res_id} の呼び出しに失敗（ブロック等）"
-        else:
-            reply_text = "待機者はいません。"
-        cur.close()
-        conn.close()
-    except Exception as e:
-        reply_text = f"エラー: {e}"
-    line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
+            reply = f"番号 {res_id} の対応を完了として記録しました。"
+    line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
+
+def cancel_reservation(event, user_id):
+    """ユーザー自身が予約を取り消す"""
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE reservations SET status = 'cancelled' WHERE user_id = %s AND status IN ('waiting', 'called')", (user_id,))
+            conn.commit()
+            reply = "予約をキャンセルしました。またのご利用をお待ちしています。"
+    line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
 
 def show_status(event):
-    try:
-        conn = psycopg2.connect(DATABASE_URL)
-        cur = conn.cursor()
-        cur.execute("SELECT COUNT(*) FROM reservations WHERE status = 'waiting'")
-        wait_count = cur.fetchone()[0]
-        cur.close()
-        conn.close()
-        reply_text = f"【現在の状況】\n待機人数: {wait_count}人"
-    except:
-        reply_text = "取得失敗"
-    line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT COUNT(*) FROM reservations WHERE status = 'waiting'")
+            w_count = cur.fetchone()[0]
+            cur.execute("SELECT id FROM reservations WHERE status = 'called' ORDER BY id ASC")
+            called_ids = [str(r[0]) for r in cur.fetchall()]
+            reply = f"【現在状況】\n待ち人数: {w_count}人\n呼び出し中: {', '.join(called_ids) if called_ids else 'なし'}"
+    line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
 
 def process_reservation(event, user_id, user_message):
-    try:
-        conn = psycopg2.connect(DATABASE_URL)
-        cur = conn.cursor()
-        cur.execute("SELECT id, status FROM reservations WHERE user_id = %s AND status IN ('waiting', 'called') ORDER BY created_at DESC LIMIT 1", (user_id,))
-        existing = cur.fetchone()
-        if existing:
-            res_id, status = existing
-            if status == 'waiting':
-                cur.execute("SELECT COUNT(*) FROM reservations WHERE status = 'waiting' AND id < %s", (res_id,))
-                wait_count = cur.fetchone()[0]
-                reply_text = f"【予約済み】番号:{res_id} / 前に{wait_count}人"
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id, status FROM reservations WHERE user_id = %s AND status IN ('waiting', 'called') ORDER BY id DESC LIMIT 1", (user_id,))
+            existing = cur.fetchone()
+            if existing:
+                res_id, status = existing
+                if status == 'waiting':
+                    cur.execute("SELECT COUNT(*) FROM reservations WHERE status = 'waiting' AND id < %s", (res_id,))
+                    reply = f"予約済みです。\n番号: {res_id}\n待ち: {cur.fetchone()[0]}人"
+                else:
+                    reply = f"【呼び出し中】\n番号: {res_id}\n会場へお越しください！"
             else:
-                reply_text = f"【呼び出し中】番号:{res_id} 会場へお越しください！"
-        else:
-            cur.execute("INSERT INTO reservations (user_id, message, status) VALUES (%s, %s, 'waiting') RETURNING id", (user_id, user_message))
-            new_id = cur.fetchone()[0]
-            conn.commit()
-            cur.execute("SELECT COUNT(*) FROM reservations WHERE status = 'waiting' AND id < %s", (new_id,))
-            wait_count = cur.fetchone()[0]
-            reply_text = f"【受付完了】番号: {new_id} / 待ち: {wait_count}人"
-        cur.close()
-        conn.close()
-    except:
-        reply_text = "予約エラー"
-    line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
+                cur.execute("INSERT INTO reservations (user_id, message) VALUES (%s, %s) RETURNING id", (user_id, user_message))
+                new_id = cur.fetchone()[0]
+                conn.commit()
+                cur.execute("SELECT COUNT(*) FROM reservations WHERE status = 'waiting' AND id < %s", (new_id,))
+                reply = f"【受付完了】\n番号: {new_id}\n待ち: {cur.fetchone()[0]}人\nキャンセルは「キャンセル」と送ってください。"
+    line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
 
 if __name__ == "__main__":
     port = int(os.getenv("PORT", 5000))

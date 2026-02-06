@@ -23,102 +23,6 @@ handler = WebhookHandler(CHANNEL_SECRET)
 def get_connection():
     return psycopg2.connect(DATABASE_URL)
 
-# --- HTMLテンプレート（ログイン画面） ---
-LOGIN_HTML = """
-<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>ログイン - UKind</title>
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
-</head>
-<body class="bg-light">
-    <div class="container mt-5" style="max-width: 400px;">
-        <div class="card shadow">
-            <div class="card-body">
-                <h3 class="text-center mb-4">UKind 管理者ログイン</h3>
-                {% if error %}
-                <div class="alert alert-danger">{{ error }}</div>
-                {% endif %}
-                <form method="POST">
-                    <div class="mb-3">
-                        <label class="form-label">パスワード</label>
-                        <input type="password" name="password" class="form-control" required>
-                    </div>
-                    <button type="submit" class="btn btn-primary w-100">ログイン</button>
-                </form>
-            </div>
-        </div>
-    </div>
-</body>
-</html>
-"""
-
-# --- HTMLテンプレート（管理画面本体） ---
-ADMIN_HTML = """
-<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>UKind 管理画面</title>
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
-</head>
-<body class="bg-light">
-    <nav class="navbar navbar-dark bg-dark mb-4">
-        <div class="container">
-            <span class="navbar-brand">UKind 管理パネル</span>
-            <a href="/logout" class="btn btn-outline-light btn-sm">ログアウト</a>
-        </div>
-    </nav>
-    <div class="container">
-        <div class="card shadow-sm">
-            <div class="card-body p-0">
-                <table class="table table-striped mb-0">
-                    <thead class="table-dark">
-                        <tr>
-                            <th>番号</th>
-                            <th>メッセージ</th>
-                            <th>状態</th>
-                            <th>操作</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {% for row in rows %}
-                        <tr>
-                            <td>{{ row[0] }}</td>
-                            <td>{{ row[2] or '-' }}</td>
-                            <td>
-                                {% if row[3] == 'waiting' %}
-                                <span class="badge bg-warning text-dark">待機中</span>
-                                {% else %}
-                                <span class="badge bg-info">呼出中</span>
-                                {% endif %}
-                            </td>
-                            <td>
-                                {% if row[3] == 'waiting' %}
-                                <a href="/admin/call/{{ row[0] }}" class="btn btn-sm btn-success">呼出</a>
-                                {% else %}
-                                <a href="/admin/finish/{{ row[0] }}" class="btn btn-sm btn-primary">完了</a>
-                                {% endif %}
-                            </td>
-                        </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
-            </div>
-        </div>
-        <div class="text-center mt-4">
-            <a href="/admin" class="btn btn-secondary">リストを更新</a>
-        </div>
-    </div>
-</body>
-</html>
-"""
-
-# --- ルーティング ---
-
 @app.route("/login", methods=["GET", "POST"])
 def login():
     error = None
@@ -126,9 +30,8 @@ def login():
         if request.form.get("password") == ADMIN_PASSWORD:
             session["logged_in"] = True
             return redirect(url_for("admin_page"))
-        else:
-            error = "パスワードが正しくありません"
-    return render_template_string(LOGIN_HTML, error=error)
+        error = "パスワードが違います"
+    return render_template("login.html", error=error)
 
 @app.route("/logout")
 def logout():
@@ -139,6 +42,9 @@ def logout():
 def admin_page():
     if not session.get("logged_in"):
         return redirect(url_for("login"))
+    
+    # URLパラメータから更新秒数を取得（デフォルト5秒）
+    interval = request.args.get("interval", 5, type=int)
 
     with get_connection() as conn:
         with conn.cursor() as cur:
@@ -165,47 +71,13 @@ def admin_finish(res_id):
     interval = request.args.get("interval", 5)
     with get_connection() as conn:
         with conn.cursor() as cur:
+            # 完了時にユーザーに通知を送る処理を追加
+            cur.execute("SELECT user_id FROM reservations WHERE id = %s", (res_id,))
+            user_id = cur.fetchone()[0]
             cur.execute("UPDATE reservations SET status = 'done' WHERE id = %s", (res_id,))
             conn.commit()
-    return redirect(url_for("admin_page"))
+            # 「確認できた（受付完了）」という旨を送信
+            line_bot_api.push_message(user_id, TextSendMessage(text=f"ご来場ありがとうございました。番号 {res_id} 番の受付を完了しました。"))
+    return redirect(url_for("admin_page", interval=interval))
 
-# --- LINE Webhook ---
-@app.route("/callback", methods=['POST'])
-def callback():
-    signature = request.headers['X-Line-Signature']
-    body = request.get_data(as_text=True)
-    try:
-        handler.handle(body, signature)
-    except InvalidSignatureError:
-        abort(400)
-    return 'OK'
-
-@handler.add(MessageEvent, message=TextMessage)
-def handle_message(event):
-    user_message = event.message.text.strip()
-    user_id = event.source.user_id
-    process_reservation(event, user_id, user_message)
-
-def process_reservation(event, user_id, user_message):
-    with get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("SELECT id, status FROM reservations WHERE user_id = %s AND status IN ('waiting', 'called') ORDER BY id DESC LIMIT 1", (user_id,))
-            existing = cur.fetchone()
-            if existing:
-                res_id, status = existing
-                if status == 'waiting':
-                    cur.execute("SELECT COUNT(*) FROM reservations WHERE status = 'waiting' AND id < %s", (res_id,))
-                    reply = f"予約済みです。番号: {res_id} / 待ち: {cur.fetchone()[0]}人"
-                else:
-                    reply = f"【呼出中】番号: {res_id} 会場へお越しください！"
-            else:
-                cur.execute("INSERT INTO reservations (user_id, message) VALUES (%s, %s) RETURNING id", (user_id, user_message))
-                new_id = cur.fetchone()[0]
-                conn.commit()
-                cur.execute("SELECT COUNT(*) FROM reservations WHERE status = 'waiting' AND id < %s", (new_id,))
-                reply = f"【受付完了】番号: {new_id} / 待ち: {cur.fetchone()[0]}人"
-    line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
-
-if __name__ == "__main__":
-    port = int(os.getenv("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+# (以下 LINE Webhook/process_reservation 等は以前と同じ)

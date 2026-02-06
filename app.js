@@ -26,7 +26,7 @@ async function handleEvent(event) {
 
         // 現在の同意状態を確認
         const userRes = await pool.query('SELECT is_consented FROM users WHERE user_id = $1', [userId]);
-        const isConsented = userRes.rows.is_consented;
+        const isConsented = userRes.rows[0]?.is_consented ?? false;
 
         if (!isConsented) {
             // 「同意します」と返信が来た場合のみ同意とみなす

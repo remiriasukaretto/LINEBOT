@@ -306,7 +306,14 @@ TYPES_HTML = """
                     {% for t in types %}
                     <li class="list-group-item d-flex justify-content-between align-items-center">
                         <span>{{ t[1] }}</span>
-                        <a href="/admin/types/delete/{{ t[0] }}" class="btn btn-sm btn-outline-danger">削除</a>
+                        <div class="d-flex gap-2">
+                            {% if t[2] %}
+                            <a href="/admin/types/toggle/{{ t[0] }}" class="btn btn-sm btn-success">受付中</a>
+                            {% else %}
+                            <a href="/admin/types/toggle/{{ t[0] }}" class="btn btn-sm btn-danger">受付停止</a>
+                            {% endif %}
+                            <a href="/admin/types/delete/{{ t[0] }}" class="btn btn-sm btn-outline-danger">削除</a>
+                        </div>
                     </li>
                     {% else %}
                     <li class="list-group-item text-muted">登録されている種類はありません。</li>
@@ -453,6 +460,7 @@ def ensure_types_table():
                 CREATE TABLE IF NOT EXISTS reservation_types (
                     id SERIAL PRIMARY KEY,
                     name TEXT NOT NULL UNIQUE,
+                    accepting BOOLEAN NOT NULL DEFAULT TRUE,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 )
             """)
@@ -460,6 +468,10 @@ def ensure_types_table():
                 ALTER TABLE reservations
                 ADD COLUMN IF NOT EXISTS type_id INTEGER
                 REFERENCES reservation_types(id) ON DELETE SET NULL
+            """)
+            cur.execute("""
+                ALTER TABLE reservation_types
+                ADD COLUMN IF NOT EXISTS accepting BOOLEAN NOT NULL DEFAULT TRUE
             """)
             conn.commit()
 
@@ -652,7 +664,7 @@ def admin_types_page():
 
     with get_connection() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT id, name FROM reservation_types ORDER BY id ASC")
+            cur.execute("SELECT id, name, accepting FROM reservation_types ORDER BY id ASC")
             types = cur.fetchall()
     return render_template_string(TYPES_HTML, types=types, type_error=type_error, type_success=type_success)
 
@@ -665,6 +677,18 @@ def admin_types_delete(type_id):
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute("DELETE FROM reservation_types WHERE id = %s", (type_id,))
+            conn.commit()
+    return redirect(url_for("admin_types_page"))
+
+@app.route("/admin/types/toggle/<int:type_id>")
+def admin_types_toggle(type_id):
+    if not session.get("logged_in"):
+        return redirect(url_for("login"))
+
+    ensure_types_table()
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE reservation_types SET accepting = NOT accepting WHERE id = %s", (type_id,))
             conn.commit()
     return redirect(url_for("admin_types_page"))
 
@@ -783,10 +807,10 @@ def process_reservation(event, user_id, user_message):
                 type_id = None
                 type_name = None
                 if requested_type_name:
-                    cur.execute("SELECT id, name FROM reservation_types WHERE name = %s", (requested_type_name,))
+                    cur.execute("SELECT id, name, accepting FROM reservation_types WHERE name = %s", (requested_type_name,))
                     type_row = cur.fetchone()
                     if not type_row:
-                        cur.execute("SELECT name FROM reservation_types ORDER BY id ASC")
+                        cur.execute("SELECT name FROM reservation_types WHERE accepting = TRUE ORDER BY id ASC")
                         names = [r[0] for r in cur.fetchall()]
                         if names:
                             reply = f"指定した種類「{requested_type_name}」は存在しません。\n利用可能: " + " / ".join(names)
@@ -794,14 +818,23 @@ def process_reservation(event, user_id, user_message):
                             reply = "予約の種類がまだ登録されていません。管理画面で追加してください。"
                         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
                         return
-                    type_id, type_name = type_row
+                    type_id, type_name, type_accepting = type_row
+                    if not type_accepting:
+                        cur.execute("SELECT name FROM reservation_types WHERE accepting = TRUE ORDER BY id ASC")
+                        names = [r[0] for r in cur.fetchall()]
+                        if names:
+                            reply = f"「{type_name}」の新規受付は停止中です。\n利用可能: " + " / ".join(names)
+                        else:
+                            reply = f"「{type_name}」の新規受付は停止中です。"
+                        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
+                        return
                 else:
-                    cur.execute("SELECT name FROM reservation_types ORDER BY id ASC")
+                    cur.execute("SELECT name FROM reservation_types WHERE accepting = TRUE ORDER BY id ASC")
                     names = [r[0] for r in cur.fetchall()]
                     if names:
                         reply = "予約の種類を指定してください。\n利用可能: " + " / ".join(names) + "\n例: 予約 相談"
                     else:
-                        reply = "予約の種類がまだ登録されていません。管理画面で追加してください。"
+                        reply = "現在受付可能な予約の種類がありません。管理画面で受付を再開してください。"
                     line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
                     return
 

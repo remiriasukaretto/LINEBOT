@@ -95,15 +95,19 @@ ADMIN_HTML = """
                             <td>
                                 {% if row[3] == 'waiting' %}
                                 <span class="badge bg-warning text-dark">待機中</span>
-                                {% else %}
+                                {% elif row[3] == 'called' %}
                                 <span class="badge bg-info">呼出中</span>
+                                {% else %}
+                                <span class="badge bg-success">到着済み</span>
                                 {% endif %}
                             </td>
                             <td>
                                 {% if row[3] == 'waiting' %}
                                 <a href="/admin/call/{{ row[0] }}" class="btn btn-sm btn-success">呼出</a>
+                                {% elif row[3] == 'called' %}
+                                <span class="text-muted small">到着待ち</span>
                                 {% else %}
-                                <a href="/admin/finish/{{ row[0] }}" class="btn btn-sm btn-primary">完了</a>
+                                <a href="/admin/finish/{{ row[0] }}" class="btn btn-sm btn-primary">確認完了</a>
                                 {% endif %}
                             </td>
                         </tr>
@@ -145,14 +149,14 @@ def admin_page():
 
     with get_connection() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT id, user_id, message, status FROM reservations WHERE status IN ('waiting', 'called') ORDER BY id ASC")
+            cur.execute("SELECT id, user_id, message, status FROM reservations WHERE status IN ('waiting', 'called', 'arrived') ORDER BY id ASC")
             rows = cur.fetchall()
     return render_template_string(ADMIN_HTML, rows=rows)
 
 @app.route("/admin/call/<int:res_id>")
 def admin_call(res_id):
     if not session.get("logged_in"): return redirect(url_for("login"))
-    
+
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT user_id FROM reservations WHERE id = %s", (res_id,))
@@ -165,7 +169,7 @@ def admin_call(res_id):
 @app.route("/admin/finish/<int:res_id>")
 def admin_finish(res_id):
     if not session.get("logged_in"): return redirect(url_for("login"))
-    
+
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute("UPDATE reservations SET status = 'done' WHERE id = %s", (res_id,))
@@ -194,7 +198,7 @@ def process_reservation(event, user_id, user_message):
     if not normalized:
         line_bot_api.reply_message(
             event.reply_token,
-            TextSendMessage(text="メッセージを受け付けました。予約は「予約」、キャンセルは「キャンセル」と送信してください。")
+            TextSendMessage(text="メッセージを受け付けました。予約は「予約」、キャンセルは「キャンセル」、到着は「到着」と送信してください。")
         )
         return
 
@@ -202,7 +206,7 @@ def process_reservation(event, user_id, user_message):
         with conn.cursor() as cur:
             if normalized == '予約':
                 cur.execute(
-                    "SELECT id, status FROM reservations WHERE user_id = %s AND status IN ('waiting', 'called') ORDER BY id DESC LIMIT 1",
+                    "SELECT id, status FROM reservations WHERE user_id = %s AND status IN ('waiting', 'called', 'arrived') ORDER BY id DESC LIMIT 1",
                     (user_id,)
                 )
                 existing = cur.fetchone()
@@ -211,8 +215,10 @@ def process_reservation(event, user_id, user_message):
                     if status == 'waiting':
                         cur.execute("SELECT COUNT(*) FROM reservations WHERE status = 'waiting' AND id < %s", (res_id,))
                         reply = f"予約済みです。番号: {res_id} / 待ち: {cur.fetchone()[0]}人"
-                    else:
+                    elif status == 'called':
                         reply = f"【呼出中】番号: {res_id} 会場へお越しください！"
+                    else:
+                        reply = f"到着受付済みです。番号: {res_id} / スタッフが確認します。"
                 else:
                     cur.execute("INSERT INTO reservations (user_id, message) VALUES (%s, %s) RETURNING id", (user_id, user_message))
                     new_id = cur.fetchone()[0]
@@ -229,8 +235,24 @@ def process_reservation(event, user_id, user_message):
                     reply = f"予約番号 {cancelled[0]} をキャンセルしました。"
                 else:
                     reply = "キャンセル対象の予約はありません。"
+            elif normalized == '到着':
+                cur.execute(
+                    "SELECT id, status FROM reservations WHERE user_id = %s AND status IN ('waiting', 'called') ORDER BY id DESC LIMIT 1",
+                    (user_id,)
+                )
+                existing = cur.fetchone()
+                if not existing:
+                    reply = "到着の対象となる予約がありません。"
+                else:
+                    res_id, status = existing
+                    if status == 'waiting':
+                        reply = "まだ呼出されていません。呼出後に「到着」と送信してください。"
+                    else:
+                        cur.execute("UPDATE reservations SET status = 'arrived' WHERE id = %s", (res_id,))
+                        conn.commit()
+                        reply = f"到着を受け付けました。番号: {res_id} / スタッフが確認します。"
             else:
-                reply = "メッセージを受け付けました。予約は「予約」、キャンセルは「キャンセル」と送信してください。"
+                reply = "メッセージを受け付けました。予約は「予約」、キャンセルは「キャンセル」、到着は「到着」と送信してください。"
     line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
 
 if __name__ == "__main__":

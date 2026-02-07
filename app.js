@@ -9,6 +9,7 @@ const config = {
     channelSecret: process.env.CHANNEL_SECRET
 };
 const client = new Client(config);
+const diagnosticsEnabled = process.env.DIAGNOSTICS_ENABLED === 'true';
 
 app.post('/webhook', middleware(config), (req, res) => {
     Promise.all(req.body.events.map(handleEvent)).then(() => res.json({}));
@@ -26,14 +27,17 @@ async function handleEvent(event) {
         await pool.query('INSERT INTO users (user_id) VALUES ($1) ON CONFLICT DO NOTHING', [userId]);
 
         let replyText = null;
+        let diagnosticsNote = null;
 
         if (normalizedText === '予約') {
+            diagnosticsNote = 'command=reserve';
             const existingRes = await pool.query(
                 "SELECT id, status FROM reservations WHERE user_id = $1 AND status IN ('waiting', 'called') ORDER BY id DESC LIMIT 1",
                 [userId]
             );
             if (existingRes.rows.length > 0) {
                 const { id, status } = existingRes.rows[0];
+                diagnosticsNote += ` existing=true status=${status} id=${id}`;
                 if (status === 'waiting') {
                     const waitCountRes = await pool.query(
                         "SELECT COUNT(*) FROM reservations WHERE status = 'waiting' AND id < $1",
@@ -49,6 +53,7 @@ async function handleEvent(event) {
                     [userId, text]
                 );
                 const newId = insertRes.rows[0].id;
+                diagnosticsNote += ` existing=false createdId=${newId}`;
                 const waitCountRes = await pool.query(
                     "SELECT COUNT(*) FROM reservations WHERE status = 'waiting' AND id < $1",
                     [newId]
@@ -56,66 +61,39 @@ async function handleEvent(event) {
                 replyText = `【受付完了】番号: ${newId} / 待ち: ${waitCountRes.rows[0].count}人`;
             }
         } else if (normalizedText === 'キャンセル') {
+            diagnosticsNote = 'command=cancel';
             const cancelRes = await pool.query(
                 "UPDATE reservations SET status = 'cancelled' WHERE id = (SELECT id FROM reservations WHERE user_id = $1 AND status IN ('waiting', 'called') ORDER BY id DESC LIMIT 1) RETURNING id",
                 [userId]
             );
             if (cancelRes.rows.length === 0) {
+                diagnosticsNote += ' result=none';
                 replyText = 'キャンセル対象の予約はありません。';
             } else {
+                diagnosticsNote += ` result=cancelled id=${cancelRes.rows[0].id}`;
                 replyText = `予約番号 ${cancelRes.rows[0].id} をキャンセルしました。`;
             }
         } else {
-            replyText = 'メッセージを受け付けました。予約は「予約」、キャンセルは「キャンセル」と送信してください。';
-        }
-
-        let replyText = null;
-
-        if (normalizedText === '予約') {
-            const existingRes = await pool.query(
-                "SELECT id, status FROM reservations WHERE user_id = $1 AND status IN ('waiting', 'called') ORDER BY id DESC LIMIT 1",
-                [userId]
-            );
-            if (existingRes.rows.length > 0) {
-                const { id, status } = existingRes.rows[0];
-                if (status === 'waiting') {
-                    const waitCountRes = await pool.query(
-                        "SELECT COUNT(*) FROM reservations WHERE status = 'waiting' AND id < $1",
-                        [id]
-                    );
-                    replyText = `予約済みです。番号: ${id} / 待ち: ${waitCountRes.rows[0].count}人`;
-                } else {
-                    replyText = `【呼出中】番号: ${id} 会場へお越しください！`;
-                }
-            } else {
-                const insertRes = await pool.query(
-                    'INSERT INTO reservations (user_id, message) VALUES ($1, $2) RETURNING id',
-                    [userId, text]
-                );
-                const newId = insertRes.rows[0].id;
-                const waitCountRes = await pool.query(
-                    "SELECT COUNT(*) FROM reservations WHERE status = 'waiting' AND id < $1",
-                    [newId]
-                );
-                replyText = `【受付完了】番号: ${newId} / 待ち: ${waitCountRes.rows[0].count}人`;
-            }
-        } else if (normalizedText === 'キャンセル') {
-            const cancelRes = await pool.query(
-                "UPDATE reservations SET status = 'cancelled' WHERE user_id = $1 AND status IN ('waiting', 'called') RETURNING id",
-                [userId]
-            );
-            if (cancelRes.rows.length === 0) {
-                replyText = 'キャンセル対象の予約はありません。';
-            } else {
-                replyText = `予約番号 ${cancelRes.rows[0].id} をキャンセルしました。`;
-            }
-        } else {
+            diagnosticsNote = `command=other text=${normalizedText}`;
             replyText = 'メッセージを受け付けました。予約は「予約」、キャンセルは「キャンセル」と送信してください。';
         }
 
         // 同意済みの場合、メッセージを保存
         await pool.query('INSERT INTO message_logs (user_id, message_text) VALUES ($1, $2)', [userId, text]);
         console.log(`保存成功: ${text} (from: ${userId})`);
+        if (diagnosticsNote) {
+            console.info(`diagnostics: ${diagnosticsNote} userId=${userId}`);
+        }
+
+        if (replyText) {
+            if (diagnosticsEnabled && diagnosticsNote) {
+                replyText = `${replyText}\n\n[診断] ${diagnosticsNote}`;
+            }
+            return client.replyMessage(event.replyToken, {
+                type: 'text',
+                text: replyText
+            });
+        }
 
         if (replyText) {
             return client.replyMessage(event.replyToken, {

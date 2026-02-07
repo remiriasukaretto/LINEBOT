@@ -190,23 +190,47 @@ def handle_message(event):
     process_reservation(event, user_id, user_message)
 
 def process_reservation(event, user_id, user_message):
+    normalized = user_message.strip()
+    if not normalized:
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage(text="メッセージを受け付けました。予約は「予約」、キャンセルは「キャンセル」と送信してください。")
+        )
+        return
+
     with get_connection() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT id, status FROM reservations WHERE user_id = %s AND status IN ('waiting', 'called') ORDER BY id DESC LIMIT 1", (user_id,))
-            existing = cur.fetchone()
-            if existing:
-                res_id, status = existing
-                if status == 'waiting':
-                    cur.execute("SELECT COUNT(*) FROM reservations WHERE status = 'waiting' AND id < %s", (res_id,))
-                    reply = f"予約済みです。番号: {res_id} / 待ち: {cur.fetchone()[0]}人"
+            if normalized == '予約':
+                cur.execute(
+                    "SELECT id, status FROM reservations WHERE user_id = %s AND status IN ('waiting', 'called') ORDER BY id DESC LIMIT 1",
+                    (user_id,)
+                )
+                existing = cur.fetchone()
+                if existing:
+                    res_id, status = existing
+                    if status == 'waiting':
+                        cur.execute("SELECT COUNT(*) FROM reservations WHERE status = 'waiting' AND id < %s", (res_id,))
+                        reply = f"予約済みです。番号: {res_id} / 待ち: {cur.fetchone()[0]}人"
+                    else:
+                        reply = f"【呼出中】番号: {res_id} 会場へお越しください！"
                 else:
-                    reply = f"【呼出中】番号: {res_id} 会場へお越しください！"
+                    cur.execute("INSERT INTO reservations (user_id, message) VALUES (%s, %s) RETURNING id", (user_id, user_message))
+                    new_id = cur.fetchone()[0]
+                    conn.commit()
+                    cur.execute("SELECT COUNT(*) FROM reservations WHERE status = 'waiting' AND id < %s", (new_id,))
+                    reply = f"【受付完了】番号: {new_id} / 待ち: {cur.fetchone()[0]}人"
+            elif normalized == 'キャンセル':
+                cur.execute(
+                    "UPDATE reservations SET status = 'cancelled' WHERE id = (SELECT id FROM reservations WHERE user_id = %s AND status IN ('waiting', 'called') ORDER BY id DESC LIMIT 1) RETURNING id",
+                    (user_id,)
+                )
+                cancelled = cur.fetchone()
+                if cancelled:
+                    reply = f"予約番号 {cancelled[0]} をキャンセルしました。"
+                else:
+                    reply = "キャンセル対象の予約はありません。"
             else:
-                cur.execute("INSERT INTO reservations (user_id, message) VALUES (%s, %s) RETURNING id", (user_id, user_message))
-                new_id = cur.fetchone()[0]
-                conn.commit()
-                cur.execute("SELECT COUNT(*) FROM reservations WHERE status = 'waiting' AND id < %s", (new_id,))
-                reply = f"【受付完了】番号: {new_id} / 待ち: {cur.fetchone()[0]}人"
+                reply = "メッセージを受け付けました。予約は「予約」、キャンセルは「キャンセル」と送信してください。"
     line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
 
 if __name__ == "__main__":

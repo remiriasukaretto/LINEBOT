@@ -1,6 +1,6 @@
 import os
 import psycopg2
-from flask import Flask, request, abort, render_template_string, redirect, url_for, session
+from flask import Flask, request, abort, render_template_string, redirect, url_for, session, jsonify
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import MessageEvent, TextMessage, TextSendMessage
@@ -72,7 +72,10 @@ ADMIN_HTML = """
     <nav class="navbar navbar-dark bg-dark mb-4">
         <div class="container">
             <span class="navbar-brand">UKind 管理パネル</span>
-            <a href="/logout" class="btn btn-outline-light btn-sm">ログアウト</a>
+            <div class="d-flex gap-2">
+                <a href="/admin/history" class="btn btn-outline-light btn-sm">過去ログ</a>
+                <a href="/logout" class="btn btn-outline-light btn-sm">ログアウト</a>
+            </div>
         </div>
     </nav>
     <div class="container">
@@ -87,7 +90,7 @@ ADMIN_HTML = """
                             <th>操作</th>
                         </tr>
                     </thead>
-                    <tbody>
+                    <tbody id="active-rows">
                         {% for row in rows %}
                         <tr>
                             <td>{{ row[0] }}</td>
@@ -118,6 +121,101 @@ ADMIN_HTML = """
         </div>
         <div class="text-center mt-4">
             <a href="/admin" class="btn btn-secondary">リストを更新</a>
+        </div>
+    </div>
+    <script>
+        async function refreshActiveRows() {
+            try {
+                const res = await fetch('/admin/data', { cache: 'no-store' });
+                if (!res.ok) return;
+                const data = await res.json();
+                const tbody = document.getElementById('active-rows');
+                if (!tbody) return;
+                tbody.innerHTML = data.rows.map(row => {
+                    const id = row.id;
+                    const message = row.message || '-';
+                    let statusBadge = '';
+                    let action = '';
+                    if (row.status === 'waiting') {
+                        statusBadge = '<span class="badge bg-warning text-dark">待機中</span>';
+                        action = `<a href="/admin/call/${id}" class="btn btn-sm btn-success">呼出</a>`;
+                    } else if (row.status === 'called') {
+                        statusBadge = '<span class="badge bg-info">呼出中</span>';
+                        action = '<span class="text-muted small">到着待ち</span>';
+                    } else {
+                        statusBadge = '<span class="badge bg-success">到着済み</span>';
+                        action = `<a href="/admin/finish/${id}" class="btn btn-sm btn-primary">確認完了</a>`;
+                    }
+                    return `<tr>
+                        <td>${id}</td>
+                        <td>${message}</td>
+                        <td>${statusBadge}</td>
+                        <td>${action}</td>
+                    </tr>`;
+                }).join('');
+            } catch (e) {
+                // no-op
+            }
+        }
+        setInterval(refreshActiveRows, 5000);
+    </script>
+</body>
+</html>
+"""
+
+# --- HTMLテンプレート（過去ログ） ---
+HISTORY_HTML = """
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>UKind 過去ログ</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
+</head>
+<body class="bg-light">
+    <nav class="navbar navbar-dark bg-dark mb-4">
+        <div class="container">
+            <span class="navbar-brand">UKind 過去ログ</span>
+            <div class="d-flex gap-2">
+                <a href="/admin" class="btn btn-outline-light btn-sm">管理画面</a>
+                <a href="/logout" class="btn btn-outline-light btn-sm">ログアウト</a>
+            </div>
+        </div>
+    </nav>
+    <div class="container">
+        <div class="card shadow-sm">
+            <div class="card-body p-0">
+                <table class="table table-striped mb-0">
+                    <thead class="table-dark">
+                        <tr>
+                            <th>番号</th>
+                            <th>メッセージ</th>
+                            <th>状態</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for row in rows %}
+                        <tr>
+                            <td>{{ row[0] }}</td>
+                            <td>{{ row[2] or '-' }}</td>
+                            <td>
+                                {% if row[3] == 'done' %}
+                                <span class="badge bg-primary">確認完了</span>
+                                {% elif row[3] == 'cancelled' %}
+                                <span class="badge bg-secondary">キャンセル</span>
+                                {% else %}
+                                <span class="badge bg-success">到着済み</span>
+                                {% endif %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        <div class="text-center mt-4">
+            <a href="/admin/history" class="btn btn-secondary">リストを更新</a>
         </div>
     </div>
 </body>
@@ -152,6 +250,33 @@ def admin_page():
             cur.execute("SELECT id, user_id, message, status FROM reservations WHERE status IN ('waiting', 'called', 'arrived') ORDER BY id ASC")
             rows = cur.fetchall()
     return render_template_string(ADMIN_HTML, rows=rows)
+
+@app.route("/admin/data")
+def admin_data():
+    if not session.get("logged_in"):
+        return jsonify({"error": "unauthorized"}), 401
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id, message, status FROM reservations WHERE status IN ('waiting', 'called', 'arrived') ORDER BY id ASC")
+            rows = cur.fetchall()
+    return jsonify({
+        "rows": [
+            {"id": row[0], "message": row[1], "status": row[2]}
+            for row in rows
+        ]
+    })
+
+@app.route("/admin/history")
+def admin_history():
+    if not session.get("logged_in"):
+        return redirect(url_for("login"))
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id, user_id, message, status FROM reservations WHERE status IN ('done', 'cancelled', 'arrived') ORDER BY id DESC LIMIT 200")
+            rows = cur.fetchall()
+    return render_template_string(HISTORY_HTML, rows=rows)
 
 @app.route("/admin/call/<int:res_id>")
 def admin_call(res_id):

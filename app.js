@@ -19,6 +19,7 @@ async function handleEvent(event) {
 
     const userId = event.source.userId; // ユーザーIDのみで識別 [1]
     const text = event.message.text;
+    const normalizedText = text.trim();
 
     try {
         // ユーザーをDBに登録（未登録の場合のみ）
@@ -30,7 +31,7 @@ async function handleEvent(event) {
 
         if (!isConsented) {
             // 「同意します」と返信が来た場合のみ同意とみなす
-            if (text === '同意します') {
+            if (normalizedText === '同意します') {
                 await pool.query('UPDATE users SET is_consented = TRUE WHERE user_id = $1', [userId]);
                 return client.replyMessage(event.replyToken, {
                     type: 'text',
@@ -47,7 +48,7 @@ async function handleEvent(event) {
 
         let replyText = null;
 
-        if (text === '予約') {
+        if (normalizedText === '予約') {
             const existingRes = await pool.query(
                 "SELECT id, status FROM reservations WHERE user_id = $1 AND status IN ('waiting', 'called') ORDER BY id DESC LIMIT 1",
                 [userId]
@@ -75,7 +76,7 @@ async function handleEvent(event) {
                 );
                 replyText = `【受付完了】番号: ${newId} / 待ち: ${waitCountRes.rows[0].count}人`;
             }
-        } else if (text === 'キャンセル') {
+        } else if (normalizedText === 'キャンセル') {
             const cancelRes = await pool.query(
                 "UPDATE reservations SET status = 'cancelled' WHERE user_id = $1 AND status IN ('waiting', 'called') RETURNING id",
                 [userId]

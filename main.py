@@ -73,38 +73,13 @@ ADMIN_HTML = """
         <div class="container">
             <span class="navbar-brand">UKind 管理パネル</span>
             <div class="d-flex gap-2">
+                <a href="/admin/types" class="btn btn-outline-light btn-sm">種類管理</a>
                 <a href="/admin/history" class="btn btn-outline-light btn-sm">過去ログ</a>
                 <a href="/logout" class="btn btn-outline-light btn-sm">ログアウト</a>
             </div>
         </div>
     </nav>
     <div class="container">
-        <div class="card shadow-sm mb-4">
-            <div class="card-body">
-                <h5 class="card-title">予約の種類</h5>
-                {% if type_error %}
-                <div class="alert alert-danger">{{ type_error }}</div>
-                {% endif %}
-                <form method="POST" action="/admin/types" class="row g-2 align-items-center mb-3">
-                    <div class="col-sm-8">
-                        <input type="text" name="name" class="form-control" placeholder="種類名（例：相談 / 受付 / 案内）" required>
-                    </div>
-                    <div class="col-sm-4 d-grid">
-                        <button type="submit" class="btn btn-primary">追加</button>
-                    </div>
-                </form>
-                <ul class="list-group">
-                    {% for t in types %}
-                    <li class="list-group-item d-flex justify-content-between align-items-center">
-                        <span>{{ t[1] }}</span>
-                        <a href="/admin/types/delete/{{ t[0] }}" class="btn btn-sm btn-outline-danger">削除</a>
-                    </li>
-                    {% else %}
-                    <li class="list-group-item text-muted">登録されている種類はありません。</li>
-                    {% endfor %}
-                </ul>
-            </div>
-        </div>
         <div class="card shadow-sm mb-4">
             <div class="card-body">
                 <div class="row g-2 align-items-center">
@@ -124,6 +99,24 @@ ADMIN_HTML = """
                             <span class="badge bg-secondary">{{ c[0] }}: {{ c[1] }}</span>
                             {% endfor %}
                         </div>
+                    </div>
+                </div>
+                <div class="row g-2 align-items-center mt-2">
+                    <div class="col-sm-6">
+                        <label class="form-label">並べ替え</label>
+                        <select id="sort-by" class="form-select">
+                            <option value="id" {% if sort_by == 'id' %}selected{% endif %}>番号</option>
+                            <option value="status" {% if sort_by == 'status' %}selected{% endif %}>状態</option>
+                            <option value="type" {% if sort_by == 'type' %}selected{% endif %}>種類</option>
+                            <option value="message" {% if sort_by == 'message' %}selected{% endif %}>メッセージ</option>
+                        </select>
+                    </div>
+                    <div class="col-sm-6">
+                        <label class="form-label">順序</label>
+                        <select id="sort-order" class="form-select">
+                            <option value="asc" {% if sort_order == 'asc' %}selected{% endif %}>昇順</option>
+                            <option value="desc" {% if sort_order == 'desc' %}selected{% endif %}>降順</option>
+                        </select>
                     </div>
                 </div>
             </div>
@@ -157,11 +150,20 @@ ADMIN_HTML = """
                             </td>
                             <td>
                                 {% if row[3] == 'waiting' %}
-                                <a href="/admin/call/{{ row[0] }}" class="btn btn-sm btn-success">呼出</a>
+                                <div class="d-flex gap-1">
+                                    <a href="/admin/call/{{ row[0] }}" class="btn btn-sm btn-success">呼出</a>
+                                    <a href="/admin/cancel/{{ row[0] }}" class="btn btn-sm btn-outline-danger">中止</a>
+                                </div>
                                 {% elif row[3] == 'called' %}
-                                <span class="text-muted small">到着待ち</span>
+                                <div class="d-flex gap-1">
+                                    <span class="text-muted small">到着待ち</span>
+                                    <a href="/admin/cancel/{{ row[0] }}" class="btn btn-sm btn-outline-danger">中止</a>
+                                </div>
                                 {% else %}
-                                <a href="/admin/finish/{{ row[0] }}" class="btn btn-sm btn-primary">確認完了</a>
+                                <div class="d-flex gap-1">
+                                    <a href="/admin/finish/{{ row[0] }}" class="btn btn-sm btn-primary">確認完了</a>
+                                    <a href="/admin/cancel/{{ row[0] }}" class="btn btn-sm btn-outline-danger">中止</a>
+                                </div>
                                 {% endif %}
                             </td>
                         </tr>
@@ -175,15 +177,21 @@ ADMIN_HTML = """
         </div>
     </div>
     <script>
-        function getTypeFilterQuery() {
+        function getQueryParams() {
+            const params = new URLSearchParams();
             const select = document.getElementById('type-filter');
-            if (!select || !select.value) return '';
-            return `?type_id=${encodeURIComponent(select.value)}`;
+            if (select && select.value) params.set('type_id', select.value);
+            const sortBy = document.getElementById('sort-by');
+            if (sortBy && sortBy.value) params.set('sort_by', sortBy.value);
+            const sortOrder = document.getElementById('sort-order');
+            if (sortOrder && sortOrder.value) params.set('sort_order', sortOrder.value);
+            const q = params.toString();
+            return q ? `?${q}` : '';
         }
 
         async function refreshActiveRows() {
             try {
-                const res = await fetch('/admin/data' + getTypeFilterQuery(), { cache: 'no-store' });
+                const res = await fetch('/admin/data' + getQueryParams(), { cache: 'no-store' });
                 if (!res.ok) return;
                 const data = await res.json();
                 const tbody = document.getElementById('active-rows');
@@ -196,13 +204,13 @@ ADMIN_HTML = """
                     let action = '';
                     if (row.status === 'waiting') {
                         statusBadge = '<span class="badge bg-warning text-dark">待機中</span>';
-                        action = `<a href="/admin/call/${id}" class="btn btn-sm btn-success">呼出</a>`;
+                        action = `<div class="d-flex gap-1"><a href="/admin/call/${id}" class="btn btn-sm btn-success">呼出</a><a href="/admin/cancel/${id}" class="btn btn-sm btn-outline-danger">中止</a></div>`;
                     } else if (row.status === 'called') {
                         statusBadge = '<span class="badge bg-info">呼出中</span>';
-                        action = '<span class="text-muted small">到着待ち</span>';
+                        action = `<div class="d-flex gap-1"><span class="text-muted small">到着待ち</span><a href="/admin/cancel/${id}" class="btn btn-sm btn-outline-danger">中止</a></div>`;
                     } else {
                         statusBadge = '<span class="badge bg-success">到着済み</span>';
-                        action = `<a href="/admin/finish/${id}" class="btn btn-sm btn-primary">確認完了</a>`;
+                        action = `<div class="d-flex gap-1"><a href="/admin/finish/${id}" class="btn btn-sm btn-primary">確認完了</a><a href="/admin/cancel/${id}" class="btn btn-sm btn-outline-danger">中止</a></div>`;
                     }
                     return `<tr>
                         <td>${id}</td>
@@ -217,12 +225,73 @@ ADMIN_HTML = """
             }
         }
         setInterval(refreshActiveRows, 5000);
-        document.getElementById('type-filter')?.addEventListener('change', () => {
-            const select = document.getElementById('type-filter');
-            const typeId = select && select.value ? `?type_id=${encodeURIComponent(select.value)}` : '';
-            window.location.href = '/admin' + typeId;
-        });
+        function applyAdminFilters() {
+            window.location.href = '/admin' + getQueryParams();
+        }
+        document.getElementById('type-filter')?.addEventListener('change', applyAdminFilters);
+        document.getElementById('sort-by')?.addEventListener('change', applyAdminFilters);
+        document.getElementById('sort-order')?.addEventListener('change', applyAdminFilters);
     </script>
+</body>
+</html>
+"""
+
+TYPES_HTML = """
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>UKind 予約種類管理</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
+</head>
+<body class="bg-light">
+    <nav class="navbar navbar-dark bg-dark mb-4">
+        <div class="container">
+            <span class="navbar-brand">UKind 予約種類管理</span>
+            <div class="d-flex gap-2">
+                <a href="/admin" class="btn btn-outline-light btn-sm">管理画面</a>
+                <a href="/admin/history" class="btn btn-outline-light btn-sm">過去ログ</a>
+                <a href="/logout" class="btn btn-outline-light btn-sm">ログアウト</a>
+            </div>
+        </div>
+    </nav>
+    <div class="container">
+        <div class="card shadow-sm mb-4">
+            <div class="card-body">
+                <h5 class="card-title">種類を追加</h5>
+                {% if type_error %}
+                <div class="alert alert-danger">{{ type_error }}</div>
+                {% endif %}
+                {% if type_success %}
+                <div class="alert alert-success">{{ type_success }}</div>
+                {% endif %}
+                <form method="POST" action="/admin/types" class="row g-2 align-items-center">
+                    <div class="col-sm-8">
+                        <input type="text" name="name" class="form-control" placeholder="種類名（例：相談 / 受付 / 案内）" required>
+                    </div>
+                    <div class="col-sm-4 d-grid">
+                        <button type="submit" class="btn btn-primary">追加</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+        <div class="card shadow-sm">
+            <div class="card-body">
+                <h5 class="card-title">登録済みの種類</h5>
+                <ul class="list-group">
+                    {% for t in types %}
+                    <li class="list-group-item d-flex justify-content-between align-items-center">
+                        <span>{{ t[1] }}</span>
+                        <a href="/admin/types/delete/{{ t[0] }}" class="btn btn-sm btn-outline-danger">削除</a>
+                    </li>
+                    {% else %}
+                    <li class="list-group-item text-muted">登録されている種類はありません。</li>
+                    {% endfor %}
+                </ul>
+            </div>
+        </div>
+    </div>
 </body>
 </html>
 """
@@ -259,6 +328,21 @@ HISTORY_HTML = """
                             <option value="{{ t[0] }}" {% if current_type_id == t[0] %}selected{% endif %}>{{ t[1] }}</option>
                             {% endfor %}
                         </select>
+                    </div>
+                    <div class="col-sm-6">
+                        <label class="form-label">並べ替え</label>
+                        <div class="d-flex gap-2">
+                            <select id="history-sort-by" class="form-select">
+                                <option value="id" {% if sort_by == 'id' %}selected{% endif %}>番号</option>
+                                <option value="status" {% if sort_by == 'status' %}selected{% endif %}>状態</option>
+                                <option value="type" {% if sort_by == 'type' %}selected{% endif %}>種類</option>
+                                <option value="message" {% if sort_by == 'message' %}selected{% endif %}>メッセージ</option>
+                            </select>
+                            <select id="history-sort-order" class="form-select">
+                                <option value="asc" {% if sort_order == 'asc' %}selected{% endif %}>昇順</option>
+                                <option value="desc" {% if sort_order == 'desc' %}selected{% endif %}>降順</option>
+                            </select>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -300,11 +384,23 @@ HISTORY_HTML = """
         </div>
     </div>
     <script>
-        document.getElementById('history-type-filter')?.addEventListener('change', () => {
+        function getHistoryQueryParams() {
+            const params = new URLSearchParams();
             const select = document.getElementById('history-type-filter');
-            const typeId = select && select.value ? `?type_id=${encodeURIComponent(select.value)}` : '';
-            window.location.href = '/admin/history' + typeId;
-        });
+            if (select && select.value) params.set('type_id', select.value);
+            const sortBy = document.getElementById('history-sort-by');
+            if (sortBy && sortBy.value) params.set('sort_by', sortBy.value);
+            const sortOrder = document.getElementById('history-sort-order');
+            if (sortOrder && sortOrder.value) params.set('sort_order', sortOrder.value);
+            const q = params.toString();
+            return q ? `?${q}` : '';
+        }
+        function applyHistoryFilters() {
+            window.location.href = '/admin/history' + getHistoryQueryParams();
+        }
+        document.getElementById('history-type-filter')?.addEventListener('change', applyHistoryFilters);
+        document.getElementById('history-sort-by')?.addEventListener('change', applyHistoryFilters);
+        document.getElementById('history-sort-order')?.addEventListener('change', applyHistoryFilters);
     </script>
 </body>
 </html>
@@ -358,6 +454,12 @@ def admin_page():
     type_error = request.args.get("type_error")
     type_id = request.args.get("type_id", "").strip()
     current_type_id = int(type_id) if type_id.isdigit() else None
+    sort_by = request.args.get("sort_by", "id").strip()
+    sort_order = request.args.get("sort_order", "asc").strip().lower()
+    if sort_by not in ("id", "status", "type", "message"):
+        sort_by = "id"
+    if sort_order not in ("asc", "desc"):
+        sort_order = "asc"
 
     with get_connection() as conn:
         with conn.cursor() as cur:
@@ -366,12 +468,19 @@ def admin_page():
             if current_type_id is not None:
                 where += " AND r.type_id = %s"
                 params.append(current_type_id)
+            order_map = {
+                "id": "r.id",
+                "status": "r.status",
+                "type": "t.name",
+                "message": "r.message"
+            }
+            order_by = order_map[sort_by]
             cur.execute(f"""
                 SELECT r.id, r.user_id, r.message, r.status, t.name
                 FROM reservations r
                 LEFT JOIN reservation_types t ON r.type_id = t.id
                 {where}
-                ORDER BY r.id ASC
+                ORDER BY {order_by} {sort_order.upper()}, r.id ASC
             """, params)
             rows = cur.fetchall()
             cur.execute("SELECT id, name FROM reservation_types ORDER BY id ASC")
@@ -391,7 +500,9 @@ def admin_page():
         types=types,
         type_error=type_error,
         current_type_id=current_type_id,
-        type_counts=type_counts
+        type_counts=type_counts,
+        sort_by=sort_by,
+        sort_order=sort_order
     )
 
 @app.route("/admin/data")
@@ -403,17 +514,30 @@ def admin_data():
         with conn.cursor() as cur:
             type_id = request.args.get("type_id", "").strip()
             current_type_id = int(type_id) if type_id.isdigit() else None
+            sort_by = request.args.get("sort_by", "id").strip()
+            sort_order = request.args.get("sort_order", "asc").strip().lower()
+            if sort_by not in ("id", "status", "type", "message"):
+                sort_by = "id"
+            if sort_order not in ("asc", "desc"):
+                sort_order = "asc"
             params = []
             where = "WHERE r.status IN ('waiting', 'called', 'arrived')"
             if current_type_id is not None:
                 where += " AND r.type_id = %s"
                 params.append(current_type_id)
+            order_map = {
+                "id": "r.id",
+                "status": "r.status",
+                "type": "t.name",
+                "message": "r.message"
+            }
+            order_by = order_map[sort_by]
             cur.execute(f"""
                 SELECT r.id, r.message, r.status, t.name
                 FROM reservations r
                 LEFT JOIN reservation_types t ON r.type_id = t.id
                 {where}
-                ORDER BY r.id ASC
+                ORDER BY {order_by} {sort_order.upper()}, r.id ASC
             """, params)
             rows = cur.fetchall()
     return jsonify({
@@ -423,24 +547,32 @@ def admin_data():
         ]
     })
 
-@app.route("/admin/types", methods=["POST"])
-def admin_types_add():
+@app.route("/admin/types", methods=["GET", "POST"])
+def admin_types_page():
     if not session.get("logged_in"):
         return redirect(url_for("login"))
 
     ensure_types_table()
-    name = (request.form.get("name") or "").strip()
-    if not name:
-        return redirect(url_for("admin_page", type_error="種類名を入力してください。"))
+    type_error = request.args.get("type_error")
+    type_success = request.args.get("type_success")
+    if request.method == "POST":
+        name = (request.form.get("name") or "").strip()
+        if not name:
+            return redirect(url_for("admin_types_page", type_error="種類名を入力してください。"))
+        try:
+            with get_connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute("INSERT INTO reservation_types (name) VALUES (%s)", (name,))
+                    conn.commit()
+            return redirect(url_for("admin_types_page", type_success="種類を追加しました。"))
+        except psycopg2.IntegrityError:
+            return redirect(url_for("admin_types_page", type_error="同じ名前の種類が既に存在します。"))
 
-    try:
-        with get_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute("INSERT INTO reservation_types (name) VALUES (%s)", (name,))
-                conn.commit()
-    except psycopg2.IntegrityError:
-        return redirect(url_for("admin_page", type_error="同じ名前の種類が既に存在します。"))
-    return redirect(url_for("admin_page"))
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id, name FROM reservation_types ORDER BY id ASC")
+            types = cur.fetchall()
+    return render_template_string(TYPES_HTML, types=types, type_error=type_error, type_success=type_success)
 
 @app.route("/admin/types/delete/<int:type_id>")
 def admin_types_delete(type_id):
@@ -452,7 +584,7 @@ def admin_types_delete(type_id):
         with conn.cursor() as cur:
             cur.execute("DELETE FROM reservation_types WHERE id = %s", (type_id,))
             conn.commit()
-    return redirect(url_for("admin_page"))
+    return redirect(url_for("admin_types_page"))
 
 @app.route("/admin/history")
 def admin_history():
@@ -464,22 +596,42 @@ def admin_history():
         with conn.cursor() as cur:
             type_id = request.args.get("type_id", "").strip()
             current_type_id = int(type_id) if type_id.isdigit() else None
+            sort_by = request.args.get("sort_by", "id").strip()
+            sort_order = request.args.get("sort_order", "desc").strip().lower()
+            if sort_by not in ("id", "status", "type", "message"):
+                sort_by = "id"
+            if sort_order not in ("asc", "desc"):
+                sort_order = "desc"
             params = []
             where = "WHERE r.status IN ('done', 'cancelled', 'arrived')"
             if current_type_id is not None:
                 where += " AND r.type_id = %s"
                 params.append(current_type_id)
+            order_map = {
+                "id": "r.id",
+                "status": "r.status",
+                "type": "t.name",
+                "message": "r.message"
+            }
+            order_by = order_map[sort_by]
             cur.execute(f"""
                 SELECT r.id, r.user_id, r.message, r.status, t.name
                 FROM reservations r
                 LEFT JOIN reservation_types t ON r.type_id = t.id
                 {where}
-                ORDER BY r.id DESC LIMIT 200
+                ORDER BY {order_by} {sort_order.upper()}, r.id DESC LIMIT 200
             """, params)
             rows = cur.fetchall()
             cur.execute("SELECT id, name FROM reservation_types ORDER BY id ASC")
             types = cur.fetchall()
-    return render_template_string(HISTORY_HTML, rows=rows, types=types, current_type_id=current_type_id)
+    return render_template_string(
+        HISTORY_HTML,
+        rows=rows,
+        types=types,
+        current_type_id=current_type_id,
+        sort_by=sort_by,
+        sort_order=sort_order
+    )
 
 @app.route("/admin/call/<int:res_id>")
 def admin_call(res_id):
@@ -501,6 +653,16 @@ def admin_finish(res_id):
     with get_connection() as conn:
         with conn.cursor() as cur:
             cur.execute("UPDATE reservations SET status = 'done' WHERE id = %s", (res_id,))
+            conn.commit()
+    return redirect(url_for("admin_page"))
+
+@app.route("/admin/cancel/<int:res_id>")
+def admin_cancel(res_id):
+    if not session.get("logged_in"): return redirect(url_for("login"))
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE reservations SET status = 'cancelled' WHERE id = %s", (res_id,))
             conn.commit()
     return redirect(url_for("admin_page"))
 

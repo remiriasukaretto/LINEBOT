@@ -95,6 +95,13 @@ async function handleEvent(event) {
             });
         }
 
+        if (replyText) {
+            return client.replyMessage(event.replyToken, {
+                type: 'text',
+                text: replyText
+            });
+        }
+
     } catch (err) {
         console.error('エラー発生:', err);
         // 障害発生時は手動運用に切り替える旨を考慮 [2]

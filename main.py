@@ -79,12 +79,62 @@ ADMIN_HTML = """
         </div>
     </nav>
     <div class="container">
+        <div class="card shadow-sm mb-4">
+            <div class="card-body">
+                <h5 class="card-title">予約の種類</h5>
+                {% if type_error %}
+                <div class="alert alert-danger">{{ type_error }}</div>
+                {% endif %}
+                <form method="POST" action="/admin/types" class="row g-2 align-items-center mb-3">
+                    <div class="col-sm-8">
+                        <input type="text" name="name" class="form-control" placeholder="種類名（例：相談 / 受付 / 案内）" required>
+                    </div>
+                    <div class="col-sm-4 d-grid">
+                        <button type="submit" class="btn btn-primary">追加</button>
+                    </div>
+                </form>
+                <ul class="list-group">
+                    {% for t in types %}
+                    <li class="list-group-item d-flex justify-content-between align-items-center">
+                        <span>{{ t[1] }}</span>
+                        <a href="/admin/types/delete/{{ t[0] }}" class="btn btn-sm btn-outline-danger">削除</a>
+                    </li>
+                    {% else %}
+                    <li class="list-group-item text-muted">登録されている種類はありません。</li>
+                    {% endfor %}
+                </ul>
+            </div>
+        </div>
+        <div class="card shadow-sm mb-4">
+            <div class="card-body">
+                <div class="row g-2 align-items-center">
+                    <div class="col-sm-6">
+                        <label class="form-label">種類で絞り込み</label>
+                        <select id="type-filter" class="form-select">
+                            <option value="">すべて</option>
+                            {% for t in types %}
+                            <option value="{{ t[0] }}" {% if current_type_id == t[0] %}selected{% endif %}>{{ t[1] }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="col-sm-6">
+                        <label class="form-label">待機数（種類別）</label>
+                        <div class="d-flex flex-wrap gap-2">
+                            {% for c in type_counts %}
+                            <span class="badge bg-secondary">{{ c[0] }}: {{ c[1] }}</span>
+                            {% endfor %}
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
         <div class="card shadow-sm">
             <div class="card-body p-0">
                 <table class="table table-striped mb-0">
                     <thead class="table-dark">
                         <tr>
                             <th>番号</th>
+                            <th>種類</th>
                             <th>メッセージ</th>
                             <th>状態</th>
                             <th>操作</th>
@@ -94,6 +144,7 @@ ADMIN_HTML = """
                         {% for row in rows %}
                         <tr>
                             <td>{{ row[0] }}</td>
+                            <td>{{ row[4] or '-' }}</td>
                             <td>{{ row[2] or '-' }}</td>
                             <td>
                                 {% if row[3] == 'waiting' %}
@@ -124,9 +175,15 @@ ADMIN_HTML = """
         </div>
     </div>
     <script>
+        function getTypeFilterQuery() {
+            const select = document.getElementById('type-filter');
+            if (!select || !select.value) return '';
+            return `?type_id=${encodeURIComponent(select.value)}`;
+        }
+
         async function refreshActiveRows() {
             try {
-                const res = await fetch('/admin/data', { cache: 'no-store' });
+                const res = await fetch('/admin/data' + getTypeFilterQuery(), { cache: 'no-store' });
                 if (!res.ok) return;
                 const data = await res.json();
                 const tbody = document.getElementById('active-rows');
@@ -134,6 +191,7 @@ ADMIN_HTML = """
                 tbody.innerHTML = data.rows.map(row => {
                     const id = row.id;
                     const message = row.message || '-';
+                    const typeName = row.type || '-';
                     let statusBadge = '';
                     let action = '';
                     if (row.status === 'waiting') {
@@ -148,6 +206,7 @@ ADMIN_HTML = """
                     }
                     return `<tr>
                         <td>${id}</td>
+                        <td>${typeName}</td>
                         <td>${message}</td>
                         <td>${statusBadge}</td>
                         <td>${action}</td>
@@ -158,6 +217,11 @@ ADMIN_HTML = """
             }
         }
         setInterval(refreshActiveRows, 5000);
+        document.getElementById('type-filter')?.addEventListener('change', () => {
+            const select = document.getElementById('type-filter');
+            const typeId = select && select.value ? `?type_id=${encodeURIComponent(select.value)}` : '';
+            window.location.href = '/admin' + typeId;
+        });
     </script>
 </body>
 </html>
@@ -184,12 +248,28 @@ HISTORY_HTML = """
         </div>
     </nav>
     <div class="container">
+        <div class="card shadow-sm mb-4">
+            <div class="card-body">
+                <div class="row g-2 align-items-center">
+                    <div class="col-sm-6">
+                        <label class="form-label">種類で絞り込み</label>
+                        <select id="history-type-filter" class="form-select">
+                            <option value="">すべて</option>
+                            {% for t in types %}
+                            <option value="{{ t[0] }}" {% if current_type_id == t[0] %}selected{% endif %}>{{ t[1] }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                </div>
+            </div>
+        </div>
         <div class="card shadow-sm">
             <div class="card-body p-0">
                 <table class="table table-striped mb-0">
                     <thead class="table-dark">
                         <tr>
                             <th>番号</th>
+                            <th>種類</th>
                             <th>メッセージ</th>
                             <th>状態</th>
                         </tr>
@@ -198,6 +278,7 @@ HISTORY_HTML = """
                         {% for row in rows %}
                         <tr>
                             <td>{{ row[0] }}</td>
+                            <td>{{ row[4] or '-' }}</td>
                             <td>{{ row[2] or '-' }}</td>
                             <td>
                                 {% if row[3] == 'done' %}
@@ -218,6 +299,13 @@ HISTORY_HTML = """
             <a href="/admin/history" class="btn btn-secondary">リストを更新</a>
         </div>
     </div>
+    <script>
+        document.getElementById('history-type-filter')?.addEventListener('change', () => {
+            const select = document.getElementById('history-type-filter');
+            const typeId = select && select.value ? `?type_id=${encodeURIComponent(select.value)}` : '';
+            window.location.href = '/admin/history' + typeId;
+        });
+    </script>
 </body>
 </html>
 """
@@ -239,6 +327,23 @@ def login():
             error = "パスワードが正しくありません"
     return render_template_string(LOGIN_HTML, error=error)
 
+def ensure_types_table():
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS reservation_types (
+                    id SERIAL PRIMARY KEY,
+                    name TEXT NOT NULL UNIQUE,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            cur.execute("""
+                ALTER TABLE reservations
+                ADD COLUMN IF NOT EXISTS type_id INTEGER
+                REFERENCES reservation_types(id) ON DELETE SET NULL
+            """)
+            conn.commit()
+
 @app.route("/logout")
 def logout():
     session.pop("logged_in", None)
@@ -249,11 +354,45 @@ def admin_page():
     if not session.get("logged_in"):
         return redirect(url_for("login"))
 
+    ensure_types_table()
+    type_error = request.args.get("type_error")
+    type_id = request.args.get("type_id", "").strip()
+    current_type_id = int(type_id) if type_id.isdigit() else None
+
     with get_connection() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT id, user_id, message, status FROM reservations WHERE status IN ('waiting', 'called', 'arrived') ORDER BY id ASC")
+            params = []
+            where = "WHERE r.status IN ('waiting', 'called', 'arrived')"
+            if current_type_id is not None:
+                where += " AND r.type_id = %s"
+                params.append(current_type_id)
+            cur.execute(f"""
+                SELECT r.id, r.user_id, r.message, r.status, t.name
+                FROM reservations r
+                LEFT JOIN reservation_types t ON r.type_id = t.id
+                {where}
+                ORDER BY r.id ASC
+            """, params)
             rows = cur.fetchall()
-    return render_template_string(ADMIN_HTML, rows=rows)
+            cur.execute("SELECT id, name FROM reservation_types ORDER BY id ASC")
+            types = cur.fetchall()
+            cur.execute("""
+                SELECT COALESCE(t.name, '未設定') AS name, COUNT(*)
+                FROM reservations r
+                LEFT JOIN reservation_types t ON r.type_id = t.id
+                WHERE r.status IN ('waiting', 'called', 'arrived')
+                GROUP BY COALESCE(t.name, '未設定')
+                ORDER BY COUNT(*) DESC
+            """)
+            type_counts = cur.fetchall()
+    return render_template_string(
+        ADMIN_HTML,
+        rows=rows,
+        types=types,
+        type_error=type_error,
+        current_type_id=current_type_id,
+        type_counts=type_counts
+    )
 
 @app.route("/admin/data")
 def admin_data():
@@ -262,25 +401,85 @@ def admin_data():
 
     with get_connection() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT id, message, status FROM reservations WHERE status IN ('waiting', 'called', 'arrived') ORDER BY id ASC")
+            type_id = request.args.get("type_id", "").strip()
+            current_type_id = int(type_id) if type_id.isdigit() else None
+            params = []
+            where = "WHERE r.status IN ('waiting', 'called', 'arrived')"
+            if current_type_id is not None:
+                where += " AND r.type_id = %s"
+                params.append(current_type_id)
+            cur.execute(f"""
+                SELECT r.id, r.message, r.status, t.name
+                FROM reservations r
+                LEFT JOIN reservation_types t ON r.type_id = t.id
+                {where}
+                ORDER BY r.id ASC
+            """, params)
             rows = cur.fetchall()
     return jsonify({
         "rows": [
-            {"id": row[0], "message": row[1], "status": row[2]}
+            {"id": row[0], "message": row[1], "status": row[2], "type": row[3]}
             for row in rows
         ]
     })
+
+@app.route("/admin/types", methods=["POST"])
+def admin_types_add():
+    if not session.get("logged_in"):
+        return redirect(url_for("login"))
+
+    ensure_types_table()
+    name = (request.form.get("name") or "").strip()
+    if not name:
+        return redirect(url_for("admin_page", type_error="種類名を入力してください。"))
+
+    try:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("INSERT INTO reservation_types (name) VALUES (%s)", (name,))
+                conn.commit()
+    except psycopg2.IntegrityError:
+        return redirect(url_for("admin_page", type_error="同じ名前の種類が既に存在します。"))
+    return redirect(url_for("admin_page"))
+
+@app.route("/admin/types/delete/<int:type_id>")
+def admin_types_delete(type_id):
+    if not session.get("logged_in"):
+        return redirect(url_for("login"))
+
+    ensure_types_table()
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM reservation_types WHERE id = %s", (type_id,))
+            conn.commit()
+    return redirect(url_for("admin_page"))
 
 @app.route("/admin/history")
 def admin_history():
     if not session.get("logged_in"):
         return redirect(url_for("login"))
 
+    ensure_types_table()
     with get_connection() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT id, user_id, message, status FROM reservations WHERE status IN ('done', 'cancelled', 'arrived') ORDER BY id DESC LIMIT 200")
+            type_id = request.args.get("type_id", "").strip()
+            current_type_id = int(type_id) if type_id.isdigit() else None
+            params = []
+            where = "WHERE r.status IN ('done', 'cancelled', 'arrived')"
+            if current_type_id is not None:
+                where += " AND r.type_id = %s"
+                params.append(current_type_id)
+            cur.execute(f"""
+                SELECT r.id, r.user_id, r.message, r.status, t.name
+                FROM reservations r
+                LEFT JOIN reservation_types t ON r.type_id = t.id
+                {where}
+                ORDER BY r.id DESC LIMIT 200
+            """, params)
             rows = cur.fetchall()
-    return render_template_string(HISTORY_HTML, rows=rows)
+            cur.execute("SELECT id, name FROM reservation_types ORDER BY id ASC")
+            types = cur.fetchall()
+    return render_template_string(HISTORY_HTML, rows=rows, types=types, current_type_id=current_type_id)
 
 @app.route("/admin/call/<int:res_id>")
 def admin_call(res_id):
@@ -333,27 +532,74 @@ def process_reservation(event, user_id, user_message):
 
     with get_connection() as conn:
         with conn.cursor() as cur:
-            if normalized == '予約':
+            if normalized.startswith('予約'):
+                ensure_types_table()
+                requested_type_name = normalized[2:].strip()
+                type_id = None
+                type_name = None
+                if requested_type_name:
+                    cur.execute("SELECT id, name FROM reservation_types WHERE name = %s", (requested_type_name,))
+                    type_row = cur.fetchone()
+                    if not type_row:
+                        cur.execute("SELECT name FROM reservation_types ORDER BY id ASC")
+                        names = [r[0] for r in cur.fetchall()]
+                        if names:
+                            reply = f"指定した種類「{requested_type_name}」は存在しません。\n利用可能: " + " / ".join(names)
+                        else:
+                            reply = "予約の種類がまだ登録されていません。管理画面で追加してください。"
+                        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
+                        return
+                    type_id, type_name = type_row
+                else:
+                    cur.execute("SELECT name FROM reservation_types ORDER BY id ASC")
+                    names = [r[0] for r in cur.fetchall()]
+                    if names:
+                        reply = "予約の種類を指定してください。\n利用可能: " + " / ".join(names) + "\n例: 予約 相談"
+                    else:
+                        reply = "予約の種類がまだ登録されていません。管理画面で追加してください。"
+                    line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
+                    return
+
                 cur.execute(
-                    "SELECT id, status FROM reservations WHERE user_id = %s AND status IN ('waiting', 'called', 'arrived') ORDER BY id DESC LIMIT 1",
+                    """
+                        SELECT r.id, r.status, t.name
+                        FROM reservations r
+                        LEFT JOIN reservation_types t ON r.type_id = t.id
+                        WHERE r.user_id = %s AND r.status IN ('waiting', 'called', 'arrived')
+                        ORDER BY r.id DESC LIMIT 1
+                    """,
                     (user_id,)
                 )
                 existing = cur.fetchone()
                 if existing:
-                    res_id, status = existing
+                    res_id, status, existing_type_name = existing
                     if status == 'waiting':
-                        cur.execute("SELECT COUNT(*) FROM reservations WHERE status = 'waiting' AND id < %s", (res_id,))
-                        reply = f"予約済みです。番号: {res_id} / 待ち: {cur.fetchone()[0]}人"
+                        if existing_type_name:
+                            cur.execute("SELECT COUNT(*) FROM reservations WHERE status = 'waiting' AND id < %s AND type_id = (SELECT type_id FROM reservations WHERE id = %s)", (res_id, res_id))
+                            reply = f"予約済みです。番号: {res_id} / 種類: {existing_type_name} / 待ち: {cur.fetchone()[0]}人"
+                        else:
+                            cur.execute("SELECT COUNT(*) FROM reservations WHERE status = 'waiting' AND id < %s", (res_id,))
+                            reply = f"予約済みです。番号: {res_id} / 待ち: {cur.fetchone()[0]}人"
                     elif status == 'called':
-                        reply = f"【呼出中】番号: {res_id} 会場へお越しください！"
+                        if existing_type_name:
+                            reply = f"【呼出中】番号: {res_id} / 種類: {existing_type_name} 会場へお越しください！"
+                        else:
+                            reply = f"【呼出中】番号: {res_id} 会場へお越しください！"
                     else:
-                        reply = f"到着受付済みです。番号: {res_id} / スタッフが確認します。"
+                        if existing_type_name:
+                            reply = f"到着受付済みです。番号: {res_id} / 種類: {existing_type_name} / スタッフが確認します。"
+                        else:
+                            reply = f"到着受付済みです。番号: {res_id} / スタッフが確認します。"
                 else:
-                    cur.execute("INSERT INTO reservations (user_id, message) VALUES (%s, %s) RETURNING id", (user_id, user_message))
+                    cur.execute("INSERT INTO reservations (user_id, message, type_id) VALUES (%s, %s, %s) RETURNING id", (user_id, user_message, type_id))
                     new_id = cur.fetchone()[0]
                     conn.commit()
-                    cur.execute("SELECT COUNT(*) FROM reservations WHERE status = 'waiting' AND id < %s", (new_id,))
-                    reply = f"【受付完了】番号: {new_id} / 待ち: {cur.fetchone()[0]}人"
+                    if type_id:
+                        cur.execute("SELECT COUNT(*) FROM reservations WHERE status = 'waiting' AND id < %s AND type_id = %s", (new_id, type_id))
+                        reply = f"【受付完了】番号: {new_id} / 種類: {type_name} / 待ち: {cur.fetchone()[0]}人"
+                    else:
+                        cur.execute("SELECT COUNT(*) FROM reservations WHERE status = 'waiting' AND id < %s", (new_id,))
+                        reply = f"【受付完了】番号: {new_id} / 待ち: {cur.fetchone()[0]}人"
             elif normalized == 'キャンセル':
                 cur.execute(
                     "UPDATE reservations SET status = 'cancelled' WHERE id = (SELECT id FROM reservations WHERE user_id = %s AND status IN ('waiting', 'called') ORDER BY id DESC LIMIT 1) RETURNING id",

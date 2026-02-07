@@ -94,7 +94,7 @@ ADMIN_HTML = """
                     </div>
                     <div class="col-sm-6">
                         <label class="form-label">待機数（種類別）</label>
-                        <div class="d-flex flex-wrap gap-2">
+                        <div id="type-counts" class="d-flex flex-wrap gap-2">
                             {% for c in type_counts %}
                             <span class="badge bg-secondary">{{ c[0] }}: {{ c[1] }}</span>
                             {% endfor %}
@@ -102,6 +102,14 @@ ADMIN_HTML = """
                     </div>
                 </div>
                 <div class="row g-2 align-items-center mt-2">
+                    <div class="col-sm-6">
+                        <label class="form-label">新規受付</label>
+                        {% if accepting_new %}
+                        <a href="/admin/toggle-accepting" class="btn btn-success w-100">受付中（停止する）</a>
+                        {% else %}
+                        <a href="/admin/toggle-accepting" class="btn btn-danger w-100">受付停止中（再開する）</a>
+                        {% endif %}
+                    </div>
                     <div class="col-sm-6">
                         <label class="form-label">並べ替え</label>
                         <select id="sort-by" class="form-select">
@@ -111,6 +119,8 @@ ADMIN_HTML = """
                             <option value="message" {% if sort_by == 'message' %}selected{% endif %}>メッセージ</option>
                         </select>
                     </div>
+                </div>
+                <div class="row g-2 align-items-center mt-2">
                     <div class="col-sm-6">
                         <label class="form-label">順序</label>
                         <select id="sort-order" class="form-select">
@@ -150,20 +160,11 @@ ADMIN_HTML = """
                             </td>
                             <td>
                                 {% if row[3] == 'waiting' %}
-                                <div class="d-flex gap-1">
-                                    <a href="/admin/call/{{ row[0] }}" class="btn btn-sm btn-success">呼出</a>
-                                    <a href="/admin/cancel/{{ row[0] }}" class="btn btn-sm btn-outline-danger">中止</a>
-                                </div>
+                                <a href="/admin/call/{{ row[0] }}" class="btn btn-sm btn-success">呼出</a>
                                 {% elif row[3] == 'called' %}
-                                <div class="d-flex gap-1">
-                                    <span class="text-muted small">到着待ち</span>
-                                    <a href="/admin/cancel/{{ row[0] }}" class="btn btn-sm btn-outline-danger">中止</a>
-                                </div>
+                                <span class="text-muted small">到着待ち</span>
                                 {% else %}
-                                <div class="d-flex gap-1">
-                                    <a href="/admin/finish/{{ row[0] }}" class="btn btn-sm btn-primary">確認完了</a>
-                                    <a href="/admin/cancel/{{ row[0] }}" class="btn btn-sm btn-outline-danger">中止</a>
-                                </div>
+                                <a href="/admin/finish/{{ row[0] }}" class="btn btn-sm btn-primary">確認完了</a>
                                 {% endif %}
                             </td>
                         </tr>
@@ -204,13 +205,13 @@ ADMIN_HTML = """
                     let action = '';
                     if (row.status === 'waiting') {
                         statusBadge = '<span class="badge bg-warning text-dark">待機中</span>';
-                        action = `<div class="d-flex gap-1"><a href="/admin/call/${id}" class="btn btn-sm btn-success">呼出</a><a href="/admin/cancel/${id}" class="btn btn-sm btn-outline-danger">中止</a></div>`;
+                        action = `<a href="/admin/call/${id}" class="btn btn-sm btn-success">呼出</a>`;
                     } else if (row.status === 'called') {
                         statusBadge = '<span class="badge bg-info">呼出中</span>';
-                        action = `<div class="d-flex gap-1"><span class="text-muted small">到着待ち</span><a href="/admin/cancel/${id}" class="btn btn-sm btn-outline-danger">中止</a></div>`;
+                        action = `<span class="text-muted small">到着待ち</span>`;
                     } else {
                         statusBadge = '<span class="badge bg-success">到着済み</span>';
-                        action = `<div class="d-flex gap-1"><a href="/admin/finish/${id}" class="btn btn-sm btn-primary">確認完了</a><a href="/admin/cancel/${id}" class="btn btn-sm btn-outline-danger">中止</a></div>`;
+                        action = `<a href="/admin/finish/${id}" class="btn btn-sm btn-primary">確認完了</a>`;
                     }
                     return `<tr>
                         <td>${id}</td>
@@ -224,7 +225,29 @@ ADMIN_HTML = """
                 // no-op
             }
         }
-        setInterval(refreshActiveRows, 5000);
+        async function refreshTypeCounts() {
+            try {
+                const res = await fetch('/admin/type_counts', { cache: 'no-store' });
+                if (!res.ok) return;
+                const data = await res.json();
+                const container = document.getElementById('type-counts');
+                if (!container) return;
+                if (!data.counts || data.counts.length === 0) {
+                    container.innerHTML = '<span class="badge bg-secondary">未設定: 0</span>';
+                    return;
+                }
+                container.innerHTML = data.counts.map(c => {
+                    const name = c.name || '未設定';
+                    return `<span class="badge bg-secondary">${name}: ${c.count}</span>`;
+                }).join('');
+            } catch (e) {
+                // no-op
+            }
+        }
+        setInterval(() => {
+            refreshActiveRows();
+            refreshTypeCounts();
+        }, 5000);
         function applyAdminFilters() {
             window.location.href = '/admin' + getQueryParams();
         }
@@ -440,6 +463,40 @@ def ensure_types_table():
             """)
             conn.commit()
 
+def ensure_settings_table():
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS app_settings (
+                    key TEXT PRIMARY KEY,
+                    value TEXT NOT NULL
+                )
+            """)
+            cur.execute("""
+                INSERT INTO app_settings (key, value)
+                VALUES ('accepting_new', 'true')
+                ON CONFLICT (key) DO NOTHING
+            """)
+            conn.commit()
+
+def is_accepting_new():
+    ensure_settings_table()
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT value FROM app_settings WHERE key = 'accepting_new'")
+            row = cur.fetchone()
+            return (row and row[0] == 'true')
+
+def set_accepting_new(flag: bool):
+    ensure_settings_table()
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE app_settings SET value = %s WHERE key = 'accepting_new'",
+                ('true' if flag else 'false',)
+            )
+            conn.commit()
+
 @app.route("/logout")
 def logout():
     session.pop("logged_in", None)
@@ -460,6 +517,7 @@ def admin_page():
         sort_by = "id"
     if sort_order not in ("asc", "desc"):
         sort_order = "asc"
+    accepting_new = is_accepting_new()
 
     with get_connection() as conn:
         with conn.cursor() as cur:
@@ -502,7 +560,8 @@ def admin_page():
         current_type_id=current_type_id,
         type_counts=type_counts,
         sort_by=sort_by,
-        sort_order=sort_order
+        sort_order=sort_order,
+        accepting_new=accepting_new
     )
 
 @app.route("/admin/data")
@@ -544,6 +603,29 @@ def admin_data():
         "rows": [
             {"id": row[0], "message": row[1], "status": row[2], "type": row[3]}
             for row in rows
+        ]
+    })
+
+@app.route("/admin/type_counts")
+def admin_type_counts():
+    if not session.get("logged_in"):
+        return jsonify({"error": "unauthorized"}), 401
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT COALESCE(t.name, '未設定') AS name, COUNT(*)
+                FROM reservations r
+                LEFT JOIN reservation_types t ON r.type_id = t.id
+                WHERE r.status IN ('waiting', 'called', 'arrived')
+                GROUP BY COALESCE(t.name, '未設定')
+                ORDER BY COUNT(*) DESC
+            """)
+            counts = cur.fetchall()
+    return jsonify({
+        "counts": [
+            {"name": row[0], "count": row[1]}
+            for row in counts
         ]
     })
 
@@ -656,14 +738,11 @@ def admin_finish(res_id):
             conn.commit()
     return redirect(url_for("admin_page"))
 
-@app.route("/admin/cancel/<int:res_id>")
-def admin_cancel(res_id):
-    if not session.get("logged_in"): return redirect(url_for("login"))
-
-    with get_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute("UPDATE reservations SET status = 'cancelled' WHERE id = %s", (res_id,))
-            conn.commit()
+@app.route("/admin/toggle-accepting")
+def admin_toggle_accepting():
+    if not session.get("logged_in"):
+        return redirect(url_for("login"))
+    set_accepting_new(not is_accepting_new())
     return redirect(url_for("admin_page"))
 
 # --- LINE Webhook ---
@@ -695,6 +774,10 @@ def process_reservation(event, user_id, user_message):
     with get_connection() as conn:
         with conn.cursor() as cur:
             if normalized.startswith('予約'):
+                if not is_accepting_new():
+                    reply = "現在、新規の予約受付は停止中です。"
+                    line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
+                    return
                 ensure_types_table()
                 requested_type_name = normalized[2:].strip()
                 type_id = None

@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>UKind 過去ログ</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
+</head>
+<body class="bg-light">
+    <nav class="navbar navbar-dark bg-dark mb-4">
+        <div class="container">
+            <span class="navbar-brand">UKind 過去ログ</span>
+            <div class="d-flex gap-2">
+                <a href="/admin" class="btn btn-outline-light btn-sm">管理画面</a>
+                <form method="POST" action="/logout" class="mb-0">
+                    <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
+                    <button type="submit" class="btn btn-outline-light btn-sm">ログアウト</button>
+                </form>
+            </div>
+        </div>
+    </nav>
+    <div class="container">
+        <div class="card shadow-sm mb-4">
+            <div class="card-body">
+                <div class="row g-2 align-items-center">
+                    <div class="col-sm-6">
+                        <label class="form-label">種類で絞り込み</label>
+                        <select id="history-type-filter" class="form-select">
+                            <option value="">すべて</option>
+                            {% for t in types %}
+                            <option value="{{ t[0] }}" {% if current_type_id == t[0] %}selected{% endif %}>{{ t[1] }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="col-sm-6">
+                        <label class="form-label">並べ替え</label>
+                        <div class="d-flex gap-2">
+                            <select id="history-sort-by" class="form-select">
+                                <option value="id" {% if sort_by == 'id' %}selected{% endif %}>番号</option>
+                                <option value="status" {% if sort_by == 'status' %}selected{% endif %}>状態</option>
+                                <option value="type" {% if sort_by == 'type' %}selected{% endif %}>種類</option>
+                                <option value="message" {% if sort_by == 'message' %}selected{% endif %}>メッセージ</option>
+                            </select>
+                            <select id="history-sort-order" class="form-select">
+                                <option value="asc" {% if sort_order == 'asc' %}selected{% endif %}>昇順</option>
+                                <option value="desc" {% if sort_order == 'desc' %}selected{% endif %}>降順</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="card shadow-sm">
+            <div class="card-body p-0">
+                <table class="table table-striped mb-0">
+                    <thead class="table-dark">
+                        <tr>
+                            <th>番号</th>
+                            <th>種類</th>
+                            <th>メッセージ</th>
+                            <th>状態</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for row in rows %}
+                        <tr>
+                            <td>{{ row[0] }}</td>
+                            <td>{{ row[4] or '-' }}</td>
+                            <td>{{ row[2] or '-' }}</td>
+                            <td>
+                                {% if row[3] == 'done' %}
+                                <span class="badge bg-primary">確認完了</span>
+                                {% elif row[3] == 'cancelled' %}
+                                <span class="badge bg-secondary">キャンセル</span>
+                                {% else %}
+                                <span class="badge bg-success">到着済み</span>
+                                {% endif %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        <div class="text-center mt-4">
+            <a href="/admin/history" class="btn btn-secondary">リストを更新</a>
+        </div>
+    </div>
+    <script>
+        function getHistoryQueryParams() {
+            const params = new URLSearchParams();
+            const select = document.getElementById('history-type-filter');
+            if (select && select.value) params.set('type_id', select.value);
+            const sortBy = document.getElementById('history-sort-by');
+            if (sortBy && sortBy.value) params.set('sort_by', sortBy.value);
+            const sortOrder = document.getElementById('history-sort-order');
+            if (sortOrder && sortOrder.value) params.set('sort_order', sortOrder.value);
+            const q = params.toString();
+            return q ? `?${q}` : '';
+        }
+        function applyHistoryFilters() {
+            window.location.href = '/admin/history' + getHistoryQueryParams();
+        }
+        document.getElementById('history-type-filter')?.addEventListener('change', applyHistoryFilters);
+        document.getElementById('history-sort-by')?.addEventListener('change', applyHistoryFilters);
+        document.getElementById('history-sort-order')?.addEventListener('change', applyHistoryFilters);
+    </script>
+</body>
+</html>

@@ -1,0 +1,276 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>UKind 管理画面</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
+</head>
+<body class="bg-light">
+    <nav class="navbar navbar-dark bg-dark mb-4">
+        <div class="container">
+            <span class="navbar-brand">UKind 管理パネル</span>
+            <div class="d-flex gap-2">
+                <a href="/admin/types" class="btn btn-outline-light btn-sm">種類管理</a>
+                <a href="/admin/history" class="btn btn-outline-light btn-sm">過去ログ</a>
+                <form method="POST" action="/logout" class="mb-0">
+                    <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
+                    <button type="submit" class="btn btn-outline-light btn-sm">ログアウト</button>
+                </form>
+            </div>
+        </div>
+    </nav>
+    <div class="container">
+        <div class="card shadow-sm mb-4">
+            <div class="card-body">
+                <div class="row g-2 align-items-center">
+                    <div class="col-sm-6">
+                        <label class="form-label">種類で絞り込み</label>
+                        <select id="type-filter" class="form-select">
+                            <option value="">すべて</option>
+                            {% for t in types %}
+                            <option value="{{ t[0] }}" {% if current_type_id == t[0] %}selected{% endif %}>{{ t[1] }}</option>
+                            {% endfor %}
+                        </select>
+                    </div>
+                    <div class="col-sm-6">
+                        <label class="form-label">待機数（種類別）</label>
+                        <div id="type-counts" class="d-flex flex-wrap gap-2">
+                            {% for c in type_counts %}
+                            <span class="badge bg-secondary">{{ c[0] }}: {{ c[1] }}</span>
+                            {% endfor %}
+                        </div>
+                    </div>
+                </div>
+                <div class="row g-2 align-items-center mt-2">
+                    <div class="col-sm-6">
+                        <label class="form-label">新規受付</label>
+                        {% if accepting_new %}
+                        <form method="POST" action="/admin/toggle-accepting" class="d-grid">
+                            <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
+                            <button type="submit" class="btn btn-success w-100">受付中（停止する）</button>
+                        </form>
+                        {% else %}
+                        <form method="POST" action="/admin/toggle-accepting" class="d-grid">
+                            <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
+                            <button type="submit" class="btn btn-danger w-100">受付停止中（再開する）</button>
+                        </form>
+                        {% endif %}
+                    </div>
+                    <div class="col-sm-6">
+                        <label class="form-label">並べ替え</label>
+                        <select id="sort-by" class="form-select">
+                            <option value="id" {% if sort_by == 'id' %}selected{% endif %}>番号</option>
+                            <option value="status" {% if sort_by == 'status' %}selected{% endif %}>状態</option>
+                            <option value="type" {% if sort_by == 'type' %}selected{% endif %}>種類</option>
+                            <option value="message" {% if sort_by == 'message' %}selected{% endif %}>メッセージ</option>
+                        </select>
+                    </div>
+                </div>
+                <div class="row g-2 align-items-center mt-2">
+                    <div class="col-sm-6">
+                        <label class="form-label">順序</label>
+                        <select id="sort-order" class="form-select">
+                            <option value="asc" {% if sort_order == 'asc' %}selected{% endif %}>昇順</option>
+                            <option value="desc" {% if sort_order == 'desc' %}selected{% endif %}>降順</option>
+                        </select>
+                    </div>
+                </div>
+            </div>
+        </div>
+        <div class="card shadow-sm">
+            <div class="card-body p-0">
+                <table class="table table-striped mb-0">
+                    <thead class="table-dark">
+                        <tr>
+                            <th>番号</th>
+                            <th>種類</th>
+                            <th>メッセージ</th>
+                            <th>状態</th>
+                            <th>操作</th>
+                        </tr>
+                    </thead>
+                    <tbody id="active-rows">
+                        {% for row in rows %}
+                        <tr>
+                            <td>{{ row[0] }}</td>
+                            <td>{{ row[4] or '-' }}</td>
+                            <td>{{ row[2] or '-' }}</td>
+                            <td>
+                                {% if row[3] == 'waiting' %}
+                                <span class="badge bg-warning text-dark">待機中</span>
+                                {% elif row[3] == 'called' %}
+                                <span class="badge bg-info">呼出中</span>
+                                {% else %}
+                                <span class="badge bg-success">到着済み</span>
+                                {% endif %}
+                            </td>
+                            <td>
+                                {% if row[3] == 'waiting' %}
+                                <form method="POST" action="/admin/call/{{ row[0] }}" class="d-inline">
+                                    <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
+                                    <button type="submit" class="btn btn-sm btn-success">呼出</button>
+                                </form>
+                                {% elif row[3] == 'called' %}
+                                <span class="text-muted small">到着待ち</span>
+                                {% else %}
+                                <form method="POST" action="/admin/finish/{{ row[0] }}" class="d-inline">
+                                    <input type="hidden" name="_csrf_token" value="{{ csrf_token }}">
+                                    <button type="submit" class="btn btn-sm btn-primary">確認完了</button>
+                                </form>
+                                {% endif %}
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+        <div class="text-center mt-4">
+            <a href="/admin" class="btn btn-secondary">リストを更新</a>
+        </div>
+    </div>
+    <script>
+        const CSRF_TOKEN = {{ csrf_token | tojson }};
+        function getQueryParams() {
+            const params = new URLSearchParams();
+            const select = document.getElementById('type-filter');
+            if (select && select.value) params.set('type_id', select.value);
+            const sortBy = document.getElementById('sort-by');
+            if (sortBy && sortBy.value) params.set('sort_by', sortBy.value);
+            const sortOrder = document.getElementById('sort-order');
+            if (sortOrder && sortOrder.value) params.set('sort_order', sortOrder.value);
+            const q = params.toString();
+            return q ? `?${q}` : '';
+        }
+
+        function createCsrfInput() {
+            const input = document.createElement('input');
+            input.type = 'hidden';
+            input.name = '_csrf_token';
+            input.value = CSRF_TOKEN;
+            return input;
+        }
+
+        function buildStatusCell(row) {
+            const td = document.createElement('td');
+            const badge = document.createElement('span');
+            if (row.status === 'waiting') {
+                badge.className = 'badge bg-warning text-dark';
+                badge.textContent = '待機中';
+            } else if (row.status === 'called') {
+                badge.className = 'badge bg-info';
+                badge.textContent = '呼出中';
+            } else {
+                badge.className = 'badge bg-success';
+                badge.textContent = '到着済み';
+            }
+            td.appendChild(badge);
+            return td;
+        }
+
+        function buildActionCell(row) {
+            const td = document.createElement('td');
+            if (row.status === 'waiting') {
+                const form = document.createElement('form');
+                form.method = 'POST';
+                form.action = `/admin/call/${row.id}`;
+                form.className = 'd-inline';
+                const button = document.createElement('button');
+                button.type = 'submit';
+                button.className = 'btn btn-sm btn-success';
+                button.textContent = '呼出';
+                form.appendChild(createCsrfInput());
+                form.appendChild(button);
+                td.appendChild(form);
+            } else if (row.status === 'called') {
+                const span = document.createElement('span');
+                span.className = 'text-muted small';
+                span.textContent = '到着待ち';
+                td.appendChild(span);
+            } else {
+                const form = document.createElement('form');
+                form.method = 'POST';
+                form.action = `/admin/finish/${row.id}`;
+                form.className = 'd-inline';
+                const button = document.createElement('button');
+                button.type = 'submit';
+                button.className = 'btn btn-sm btn-primary';
+                button.textContent = '確認完了';
+                form.appendChild(createCsrfInput());
+                form.appendChild(button);
+                td.appendChild(form);
+            }
+            return td;
+        }
+
+        function buildRow(row) {
+            const tr = document.createElement('tr');
+            const tdId = document.createElement('td');
+            tdId.textContent = row.id ?? '';
+            const tdType = document.createElement('td');
+            tdType.textContent = row.type || '-';
+            const tdMessage = document.createElement('td');
+            tdMessage.textContent = row.message || '-';
+            tr.appendChild(tdId);
+            tr.appendChild(tdType);
+            tr.appendChild(tdMessage);
+            tr.appendChild(buildStatusCell(row));
+            tr.appendChild(buildActionCell(row));
+            return tr;
+        }
+
+        async function refreshActiveRows() {
+            try {
+                const res = await fetch('/admin/data' + getQueryParams(), { cache: 'no-store' });
+                if (!res.ok) return;
+                const data = await res.json();
+                const tbody = document.getElementById('active-rows');
+                if (!tbody) return;
+                tbody.textContent = '';
+                (data.rows || []).forEach(row => {
+                    tbody.appendChild(buildRow(row));
+                });
+            } catch (e) {
+                // no-op
+            }
+        }
+        async function refreshTypeCounts() {
+            try {
+                const res = await fetch('/admin/type_counts', { cache: 'no-store' });
+                if (!res.ok) return;
+                const data = await res.json();
+                const container = document.getElementById('type-counts');
+                if (!container) return;
+                container.textContent = '';
+                if (!data.counts || data.counts.length === 0) {
+                    const badge = document.createElement('span');
+                    badge.className = 'badge bg-secondary';
+                    badge.textContent = '未設定: 0';
+                    container.appendChild(badge);
+                    return;
+                }
+                data.counts.forEach(c => {
+                    const badge = document.createElement('span');
+                    badge.className = 'badge bg-secondary';
+                    const name = c.name || '未設定';
+                    badge.textContent = `${name}: ${c.count}`;
+                    container.appendChild(badge);
+                });
+            } catch (e) {
+                // no-op
+            }
+        }
+        setInterval(() => {
+            refreshActiveRows();
+            refreshTypeCounts();
+        }, 5000);
+        function applyAdminFilters() {
+            window.location.href = '/admin' + getQueryParams();
+        }
+        document.getElementById('type-filter')?.addEventListener('change', applyAdminFilters);
+        document.getElementById('sort-by')?.addEventListener('change', applyAdminFilters);
+        document.getElementById('sort-order')?.addEventListener('change', applyAdminFilters);
+    </script>
+</body>
+</html>

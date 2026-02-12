@@ -7,7 +7,7 @@ from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import MessageEvent, TextMessage, TextSendMessage
 from datetime import datetime
-from werkzeug.security import check_password_hash
+from werkzeug.security import check_password_hash, generate_password_hash
 
 app = Flask(__name__)
 
@@ -18,8 +18,11 @@ if not SECRET_KEY:
 app.secret_key = SECRET_KEY
 
 ADMIN_PASSWORD_HASH = os.getenv('ADMIN_PASSWORD_HASH')
+ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD')
+if not ADMIN_PASSWORD_HASH and ADMIN_PASSWORD:
+    ADMIN_PASSWORD_HASH = generate_password_hash(ADMIN_PASSWORD)
 if not ADMIN_PASSWORD_HASH:
-    raise RuntimeError("ADMIN_PASSWORD_HASH is required")
+    raise RuntimeError("ADMIN_PASSWORD_HASH or ADMIN_PASSWORD is required")
 
 app.config.update(
     SESSION_COOKIE_HTTPONLY=True,

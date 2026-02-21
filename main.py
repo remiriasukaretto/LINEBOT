@@ -1,15 +1,43 @@
 import os
+import re
 import secrets
 import time
+from datetime import timedelta
+from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
+
 import psycopg2
 from flask import Flask, request, abort, render_template, redirect, url_for, session, jsonify
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import MessageEvent, TextMessage, TextSendMessage
-from datetime import datetime
-from werkzeug.security import check_password_hash, generate_password_hash
+from werkzeug.middleware.proxy_fix import ProxyFix
+from werkzeug.security import check_password_hash
 
 app = Flask(__name__)
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1, x_host=1)
+
+
+def parse_bool_env(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def normalize_db_url(raw_url: str) -> str:
+    url = raw_url.replace("postgres://", "postgresql://", 1)
+    parsed = urlparse(url)
+    if not parsed.scheme or not parsed.netloc:
+        raise RuntimeError("DATABASE_URL is invalid")
+    # 本番ではTLS必須。ローカル開発時はlocalhostのみ緩和する。
+    local_hosts = {"localhost", "127.0.0.1"}
+    if parsed.hostname not in local_hosts:
+        query = dict(parse_qsl(parsed.query, keep_blank_values=True))
+        query.setdefault("sslmode", "require")
+        url = urlunparse(
+            (parsed.scheme, parsed.netloc, parsed.path, parsed.params, urlencode(query), parsed.fragment)
+        )
+    return url
 
 # --- セキュリティ設定 ---
 SECRET_KEY = os.getenv('SECRET_KEY')
@@ -17,37 +45,122 @@ if not SECRET_KEY:
     raise RuntimeError("SECRET_KEY is required")
 app.secret_key = SECRET_KEY
 
-ADMIN_PASSWORD_HASH = os.getenv('ADMIN_PASSWORD_HASH')
-ADMIN_PASSWORD = os.getenv('ADMIN_PASSWORD')
-if not ADMIN_PASSWORD_HASH and ADMIN_PASSWORD:
-    ADMIN_PASSWORD_HASH = generate_password_hash(ADMIN_PASSWORD)
+ADMIN_PASSWORD_HASH = (os.getenv('ADMIN_PASSWORD_HASH') or "").strip()
 if not ADMIN_PASSWORD_HASH:
-    raise RuntimeError("ADMIN_PASSWORD_HASH or ADMIN_PASSWORD is required")
+    raise RuntimeError("ADMIN_PASSWORD_HASH is required")
+if os.getenv("ADMIN_PASSWORD"):
+    app.logger.warning("ADMIN_PASSWORD is deprecated and ignored. Use ADMIN_PASSWORD_HASH only.")
+
+CHANNEL_ACCESS_TOKEN = (os.getenv('CHANNEL_ACCESS_TOKEN') or "").strip()
+CHANNEL_SECRET = (os.getenv('CHANNEL_SECRET') or "").strip()
+if not CHANNEL_ACCESS_TOKEN or not CHANNEL_SECRET:
+    raise RuntimeError("CHANNEL_ACCESS_TOKEN and CHANNEL_SECRET are required")
+
+raw_db_url = (os.getenv('DATABASE_URL') or "").strip()
+if not raw_db_url:
+    raise RuntimeError("DATABASE_URL is required")
+DATABASE_URL = normalize_db_url(raw_db_url)
+DB_CONNECT_TIMEOUT = int(os.getenv("DB_CONNECT_TIMEOUT", "5"))
+
+OWNER_LINE_ID = os.getenv('OWNER_LINE_ID', '').strip()
+FORCE_HTTPS = parse_bool_env("FORCE_HTTPS", True)
+ALLOWED_HOSTS = {
+    host.strip().lower() for host in os.getenv("ALLOWED_HOSTS", "").split(",") if host.strip()
+}
+SESSION_IDLE_TIMEOUT_SECONDS = int(os.getenv("SESSION_IDLE_TIMEOUT_SECONDS", "1800"))
+MAX_TYPE_NAME_LENGTH = int(os.getenv("MAX_TYPE_NAME_LENGTH", "40"))
+MAX_USER_MESSAGE_CHARS = int(os.getenv("MAX_USER_MESSAGE_CHARS", "100"))
+TYPE_NAME_PATTERN = re.compile(
+    rf"^[A-Za-z0-9ぁ-んァ-ヶー一-龠々・ 　_-]{{1,{MAX_TYPE_NAME_LENGTH}}}$"
+)
+
+WEBHOOK_RATE_LIMIT_COUNT = int(os.getenv("WEBHOOK_RATE_LIMIT_COUNT", "120"))
+WEBHOOK_RATE_LIMIT_WINDOW_SECONDS = int(os.getenv("WEBHOOK_RATE_LIMIT_WINDOW_SECONDS", "60"))
+WEBHOOK_REQUESTS = {}
 
 app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE="Lax",
-    SESSION_COOKIE_SECURE=os.getenv("SESSION_COOKIE_SECURE", "true").lower() == "true",
+    SESSION_COOKIE_SECURE=parse_bool_env("SESSION_COOKIE_SECURE", True),
+    SESSION_COOKIE_NAME="__Host-session" if parse_bool_env("SESSION_COOKIE_SECURE", True) else "session",
+    PERMANENT_SESSION_LIFETIME=timedelta(seconds=SESSION_IDLE_TIMEOUT_SECONDS),
 )
 app.jinja_env.autoescape = True
-
-CHANNEL_ACCESS_TOKEN = os.getenv('CHANNEL_ACCESS_TOKEN')
-CHANNEL_SECRET = os.getenv('CHANNEL_SECRET')
-OWNER_LINE_ID = os.getenv('OWNER_LINE_ID', '').strip()
-
-raw_db_url = os.getenv('DATABASE_URL')
-DATABASE_URL = raw_db_url.replace("postgres://", "postgresql://", 1) if raw_db_url else None
 
 line_bot_api = LineBotApi(CHANNEL_ACCESS_TOKEN)
 handler = WebhookHandler(CHANNEL_SECRET)
 
 def get_connection():
-    return psycopg2.connect(DATABASE_URL)
+    return psycopg2.connect(DATABASE_URL, connect_timeout=DB_CONNECT_TIMEOUT)
 
 def verify_admin_password(candidate: str) -> bool:
     if not candidate:
         return False
     return check_password_hash(ADMIN_PASSWORD_HASH, candidate)
+
+
+def is_local_host(host: str) -> bool:
+    return host in {"localhost", "127.0.0.1"}
+
+
+def enforce_host_allowlist():
+    if not ALLOWED_HOSTS:
+        return
+    host = (request.host.split(":", 1)[0] if request.host else "").lower()
+    if host not in ALLOWED_HOSTS:
+        abort(400)
+
+
+def enforce_https():
+    if not FORCE_HTTPS:
+        return
+    host = (request.host.split(":", 1)[0] if request.host else "").lower()
+    if is_local_host(host):
+        return
+    if request.is_secure:
+        return
+    forwarded_proto = (request.headers.get("X-Forwarded-Proto") or "").split(",")[0].strip().lower()
+    if forwarded_proto == "https":
+        return
+    secure_url = request.url.replace("http://", "https://", 1)
+    return redirect(secure_url, code=301)
+
+
+def start_admin_session():
+    now = time.time()
+    session.clear()
+    session["logged_in"] = True
+    session["issued_at"] = now
+    session["last_activity"] = now
+    session["_csrf_token"] = secrets.token_urlsafe(32)
+    session.permanent = True
+
+
+def is_admin_authenticated(update_activity: bool = True) -> bool:
+    if not session.get("logged_in"):
+        return False
+    last_activity = session.get("last_activity")
+    if not isinstance(last_activity, (int, float)):
+        session.clear()
+        return False
+    now = time.time()
+    if now - last_activity > SESSION_IDLE_TIMEOUT_SECONDS:
+        session.clear()
+        return False
+    if update_activity:
+        session["last_activity"] = now
+        session.modified = True
+    return True
+
+
+def normalize_type_name(value: str) -> str:
+    return " ".join((value or "").split())
+
+
+def validate_type_name(value: str) -> bool:
+    if not value or len(value) > MAX_TYPE_NAME_LENGTH:
+        return False
+    return bool(TYPE_NAME_PATTERN.fullmatch(value))
 
 def get_csrf_token() -> str:
     token = session.get("_csrf_token")
@@ -62,12 +175,47 @@ def validate_csrf():
     if not token or not request_token or not secrets.compare_digest(token, request_token):
         abort(403)
 
+
+@app.before_request
+def security_preflight():
+    enforce_host_allowlist()
+    secure_redirect = enforce_https()
+    if secure_redirect:
+        return secure_redirect
+
+
 @app.before_request
 def csrf_protect():
     if request.method in ("POST", "PUT", "PATCH", "DELETE"):
         if request.path == "/callback":
             return
         validate_csrf()
+
+
+@app.after_request
+def apply_security_headers(response):
+    csp = (
+        "default-src 'self'; "
+        "script-src 'self'; "
+        "style-src 'self' https://cdn.jsdelivr.net; "
+        "img-src 'self' data:; "
+        "connect-src 'self'; "
+        "frame-ancestors 'none'; "
+        "base-uri 'self'; "
+        "form-action 'self'"
+    )
+    response.headers.setdefault("Content-Security-Policy", csp)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "no-referrer")
+    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
+    forwarded_proto = (request.headers.get("X-Forwarded-Proto") or "").split(",")[0].strip().lower()
+    if FORCE_HTTPS and (request.is_secure or forwarded_proto == "https"):
+        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
+    if request.path.startswith("/admin") or request.path.startswith("/login"):
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+    return response
 
 LOGIN_ATTEMPTS = {}
 LOGIN_MAX_ATTEMPTS = int(os.getenv("LOGIN_MAX_ATTEMPTS", "10"))
@@ -83,6 +231,17 @@ def is_login_rate_limited(ip: str) -> bool:
 def record_login_failure(ip: str):
     LOGIN_ATTEMPTS.setdefault(ip, []).append(time.time())
 
+
+def is_webhook_rate_limited(ip: str) -> bool:
+    now = time.time()
+    window_start = now - WEBHOOK_RATE_LIMIT_WINDOW_SECONDS
+    attempts = [t for t in WEBHOOK_REQUESTS.get(ip, []) if t > window_start]
+    WEBHOOK_REQUESTS[ip] = attempts
+    if len(attempts) >= WEBHOOK_RATE_LIMIT_COUNT:
+        return True
+    WEBHOOK_REQUESTS[ip].append(now)
+    return False
+
 # --- ルーティング ---
 
 @app.route("/")
@@ -97,7 +256,7 @@ def login():
         if is_login_rate_limited(ip):
             abort(429)
         if verify_admin_password(request.form.get("password")):
-            session["logged_in"] = True
+            start_admin_session()
             LOGIN_ATTEMPTS.pop(ip, None)
             return redirect(url_for("admin_page"))
         else:
@@ -163,12 +322,12 @@ def set_accepting_new(flag: bool):
 
 @app.route("/logout", methods=["POST"])
 def logout():
-    session.pop("logged_in", None)
+    session.clear()
     return redirect(url_for("login"))
 
 @app.route("/admin")
 def admin_page():
-    if not session.get("logged_in"):
+    if not is_admin_authenticated():
         return redirect(url_for("login"))
 
     ensure_types_table()
@@ -231,7 +390,7 @@ def admin_page():
 
 @app.route("/admin/data")
 def admin_data():
-    if not session.get("logged_in"):
+    if not is_admin_authenticated():
         return jsonify({"error": "unauthorized"}), 401
 
     with get_connection() as conn:
@@ -273,7 +432,7 @@ def admin_data():
 
 @app.route("/admin/type_counts")
 def admin_type_counts():
-    if not session.get("logged_in"):
+    if not is_admin_authenticated():
         return jsonify({"error": "unauthorized"}), 401
 
     with get_connection() as conn:
@@ -296,16 +455,21 @@ def admin_type_counts():
 
 @app.route("/admin/types", methods=["GET", "POST"])
 def admin_types_page():
-    if not session.get("logged_in"):
+    if not is_admin_authenticated():
         return redirect(url_for("login"))
 
     ensure_types_table()
     type_error = request.args.get("type_error")
     type_success = request.args.get("type_success")
     if request.method == "POST":
-        name = (request.form.get("name") or "").strip()
-        if not name:
-            return redirect(url_for("admin_types_page", type_error="種類名を入力してください。"))
+        name = normalize_type_name(request.form.get("name"))
+        if not validate_type_name(name):
+            return redirect(
+                url_for(
+                    "admin_types_page",
+                    type_error=f"種類名は1〜{MAX_TYPE_NAME_LENGTH}文字、英数字/日本語/スペース/記号(-_・)のみ使用できます。",
+                )
+            )
         try:
             with get_connection() as conn:
                 with conn.cursor() as cur:
@@ -329,7 +493,7 @@ def admin_types_page():
 
 @app.route("/admin/types/delete/<int:type_id>", methods=["POST"])
 def admin_types_delete(type_id):
-    if not session.get("logged_in"):
+    if not is_admin_authenticated():
         return redirect(url_for("login"))
 
     ensure_types_table()
@@ -341,7 +505,7 @@ def admin_types_delete(type_id):
 
 @app.route("/admin/types/toggle/<int:type_id>", methods=["POST"])
 def admin_types_toggle(type_id):
-    if not session.get("logged_in"):
+    if not is_admin_authenticated():
         return redirect(url_for("login"))
 
     ensure_types_table()
@@ -353,7 +517,7 @@ def admin_types_toggle(type_id):
 
 @app.route("/admin/history")
 def admin_history():
-    if not session.get("logged_in"):
+    if not is_admin_authenticated():
         return redirect(url_for("login"))
 
     ensure_types_table()
@@ -401,30 +565,49 @@ def admin_history():
 
 @app.route("/admin/call/<int:res_id>", methods=["POST"])
 def admin_call(res_id):
-    if not session.get("logged_in"): return redirect(url_for("login"))
+    if not is_admin_authenticated():
+        return redirect(url_for("login"))
 
     with get_connection() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT user_id FROM reservations WHERE id = %s", (res_id,))
-            user_id = cur.fetchone()[0]
+            cur.execute(
+                "SELECT user_id FROM reservations WHERE id = %s AND status = 'waiting'",
+                (res_id,),
+            )
+            row = cur.fetchone()
+            if not row:
+                abort(404)
+            user_id = row[0]
             cur.execute("UPDATE reservations SET status = 'called' WHERE id = %s", (res_id,))
             conn.commit()
-            line_bot_api.push_message(user_id, TextSendMessage(text=f"【順番が来ました】番号 {res_id} 番の方、会場へお越しください！"))
+            try:
+                line_bot_api.push_message(
+                    user_id,
+                    TextSendMessage(text=f"【順番が来ました】番号 {res_id} 番の方、会場へお越しください！"),
+                )
+            except Exception:
+                app.logger.exception("Failed to send LINE push message for reservation %s", res_id)
     return redirect(url_for("admin_page"))
 
 @app.route("/admin/finish/<int:res_id>", methods=["POST"])
 def admin_finish(res_id):
-    if not session.get("logged_in"): return redirect(url_for("login"))
+    if not is_admin_authenticated():
+        return redirect(url_for("login"))
 
     with get_connection() as conn:
         with conn.cursor() as cur:
-            cur.execute("UPDATE reservations SET status = 'done' WHERE id = %s", (res_id,))
+            cur.execute(
+                "UPDATE reservations SET status = 'done' WHERE id = %s AND status = 'arrived' RETURNING id",
+                (res_id,),
+            )
+            if not cur.fetchone():
+                abort(404)
             conn.commit()
     return redirect(url_for("admin_page"))
 
 @app.route("/admin/toggle-accepting", methods=["POST"])
 def admin_toggle_accepting():
-    if not session.get("logged_in"):
+    if not is_admin_authenticated():
         return redirect(url_for("login"))
     set_accepting_new(not is_accepting_new())
     return redirect(url_for("admin_page"))
@@ -432,7 +615,12 @@ def admin_toggle_accepting():
 # --- LINE Webhook ---
 @app.route("/callback", methods=['POST'])
 def callback():
-    signature = request.headers['X-Line-Signature']
+    ip = request.remote_addr or "unknown"
+    if is_webhook_rate_limited(ip):
+        abort(429)
+    signature = request.headers.get('X-Line-Signature')
+    if not signature:
+        abort(400)
     body = request.get_data(as_text=True)
     try:
         handler.handle(body, signature)
@@ -454,6 +642,12 @@ def process_reservation(event, user_id, user_message):
             TextSendMessage(text="メッセージを受け付けました。予約は「予約」、キャンセルは「キャンセル」、到着は「到着」と送信してください。")
         )
         return
+    if len(normalized) > MAX_USER_MESSAGE_CHARS:
+        line_bot_api.reply_message(
+            event.reply_token,
+            TextSendMessage(text=f"メッセージは{MAX_USER_MESSAGE_CHARS}文字以内で送信してください。"),
+        )
+        return
 
     with get_connection() as conn:
         with conn.cursor() as cur:
@@ -463,10 +657,17 @@ def process_reservation(event, user_id, user_message):
                     line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
                     return
                 ensure_types_table()
-                requested_type_name = normalized[2:].strip()
+                requested_type_name = normalize_type_name(normalized[2:])
                 type_id = None
                 type_name = None
                 if requested_type_name:
+                    if not validate_type_name(requested_type_name):
+                        reply = (
+                            f"種類名は1〜{MAX_TYPE_NAME_LENGTH}文字で指定してください。"
+                            "\n例: 予約 相談"
+                        )
+                        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply))
+                        return
                     cur.execute("SELECT id, name, accepting FROM reservation_types WHERE name = %s", (requested_type_name,))
                     type_row = cur.fetchone()
                     if not type_row:

@@ -2347,6 +2347,10 @@ def test_callback_success_returns_ok(client, app_module, monkeypatch, caplog):
     assert response.get_data(as_text=True) == "OK"
     assert handled.wait(timeout=1)
     assert any(
+        "metric=webhook_received" in record.message
+        for record in caplog.records
+    )
+    assert any(
         "metric=webhook_request" in record.message
         and "result=accepted" in record.message
         for record in caplog.records

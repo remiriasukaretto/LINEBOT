@@ -72,6 +72,13 @@ def _process_webhook(webhook_handler, body: str, signature: str, ip: str) -> Non
 def callback():
     started_at = time.perf_counter()
     ip = request.remote_addr or "unknown"
+    logger.info(
+        "metric=webhook_received method=%s path=%s ip=%s body_len=%s",
+        request.method,
+        request.path,
+        ip,
+        request.content_length or 0,
+    )
     rate_limit_started_at = time.perf_counter()
     if is_webhook_rate_limited(ip):
         logger.info(

@@ -1,0 +1,71 @@
+name: Deploy Azure Container App
+
+'on':
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-deploy:
+    runs-on: ubuntu-latest
+    env:
+      ACR_NAME: ${{ secrets.ACR_NAME }}
+      ACR_LOGIN_SERVER: ${{ secrets.ACR_LOGIN_SERVER }}
+      IMAGE_NAME: ${{ secrets.ACR_IMAGE_NAME }}
+      RESOURCE_GROUP: ${{ secrets.AZURE_RESOURCE_GROUP }}
+      CONTAINER_APP_NAME: ${{ secrets.AZURE_CONTAINER_APP_NAME }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Log in to Azure
+        uses: azure/login@v2
+        with:
+          creds: ${{ secrets.AZURE_CREDENTIALS }}
+
+      - name: Validate deployment settings
+        shell: bash
+        run: |
+          set -euo pipefail
+          for value in ACR_NAME ACR_LOGIN_SERVER IMAGE_NAME RESOURCE_GROUP CONTAINER_APP_NAME; do
+            if [[ -z "${!value}" ]]; then
+              echo "Missing GitHub secret for ${value}" >&2
+              exit 1
+            fi
+          done
+
+      - name: Log in to Azure Container Registry
+        run: az acr login --name "$ACR_NAME"
+
+      - name: Build and push image
+        shell: bash
+        env:
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          image="$ACR_LOGIN_SERVER/$IMAGE_NAME:$IMAGE_TAG"
+          docker build --pull --no-cache -t "$image" .
+          docker push "$image"
+
+      - name: Deploy new revision
+        shell: bash
+        env:
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          image="$ACR_LOGIN_SERVER/$IMAGE_NAME:$IMAGE_TAG"
+          revision_suffix="${IMAGE_TAG:0:12}"
+          az containerapp update \
+            --name "$CONTAINER_APP_NAME" \
+            --resource-group "$RESOURCE_GROUP" \
+            --image "$image" \
+            --revision-suffix "$revision_suffix"
+          az containerapp ingress traffic set \
+            --name "$CONTAINER_APP_NAME" \
+            --resource-group "$RESOURCE_GROUP" \
+            --revision "$CONTAINER_APP_NAME--$revision_suffix" \
+            --weight 100

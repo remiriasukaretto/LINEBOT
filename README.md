@@ -18,6 +18,18 @@
 3. デプロイします。Render は `Procfile` を自動検出して Gunicorn で起動します。
    - 本番では `ALLOWED_HOSTS` の設定が必須です。未設定だとアプリは起動に失敗します。
 
+## Azure Container Appsへの自動デプロイ
+`.github/workflows/deploy-azure-container-app.yml` は `main` へのpushでDockerイメージをビルドし、Azure Container Registryへpushした後、Container Appの新リビジョンへ更新します。初回のみ、GitHubリポジトリのSecretsに以下を登録してください。
+
+- `AZURE_CREDENTIALS`: AzureサービスプリンシパルのJSON。Container App更新とACR push権限が必要です。
+- `AZURE_RESOURCE_GROUP`: Container Appが属するリソースグループ名
+- `AZURE_CONTAINER_APP_NAME`: 更新対象のContainer App名（例: `dev187-re`）
+- `ACR_NAME`: ACR名（例: `linebotacr`）
+- `ACR_LOGIN_SERVER`: ACRログインサーバー（例: `linebotacr-e8c3bgczfhdpfgfn.azurecr.io`）
+- `ACR_IMAGE_NAME`: ACR内のイメージ名（例: `dev`）
+
+アプリの環境変数やシークレットはAzure Container App側で管理し、Workflowには登録しません。デプロイ後は新リビジョンの起動とトラフィック切り替えを確認してください。
+
 ## バッチ呼び出しキュー
 1. アプリ環境変数に `BATCH_CALL_RUNNER_TOKEN` を設定します。
 2. GitHub リポジトリの secrets に以下を追加します。

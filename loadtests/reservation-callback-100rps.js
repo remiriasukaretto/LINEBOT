@@ -18,6 +18,7 @@ if (!CHANNEL_SECRET) {
 
 export const reservationSuccessRate = new Rate('reservation_success_rate');
 export const reservationRequests = new Counter('reservation_requests');
+export const callbackAcceptedRate = new Rate('callback_accepted_rate');
 
 export const options = {
     scenarios: {
@@ -58,6 +59,7 @@ function buildEvent(userId, eventId) {
                     type: 'text',
                     id: eventId,
                     text: `予約 ${RESERVATION_TYPE}`,
+                    quoteToken: `loadtest-quote-${eventId}`,
                 },
             },
         ],
@@ -80,6 +82,7 @@ export default function () {
 
     reservationRequests.add(1);
     const accepted = response.status === 200;
+    callbackAcceptedRate.add(accepted);
     reservationSuccessRate.add(accepted);
 
     check(response, {

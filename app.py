@@ -12,9 +12,17 @@ main.py 内の他のモジュールレベル関数（ensure_database_schema等�
 あえてapp.py側には移していない。main.py は `from app import create_app`
 して `app = create_app()` を呼び、その上に自身のルート・フックを追加する。
 """
+import logging
 import re
+import sys
 from datetime import timedelta
 from pathlib import Path
+
+logging.basicConfig(
+    level=logging.INFO,
+    stream=sys.stderr,
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
 
 from flask import Flask  # type: ignore
 from flask_compress import Compress  # type: ignore

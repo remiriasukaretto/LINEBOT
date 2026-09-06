@@ -68,6 +68,22 @@ k6 run \
 
 このシナリオはLINE署名を生成し、異なるユーザーIDで `予約 相談` を送信します。`/callback` は内部エラーでもLINE再送防止のため200を返すため、k6のHTTP成功率だけではDB登録成功率を判定できません。試験後に、送信リクエスト数（100 RPS × 600秒 = 60000）と予約登録数をDBで照合してください。
 
+### Webhookログの統計分析
+
+Azureログストリームから `metric=webhook_` を含む行を保存し、次のコマンドで `p50/p95/p99` を集計できます。
+
+```bash
+python loadtests/analyze_webhook_logs.py azure-webhook.log
+```
+
+ログを標準入力から渡すこともできます。
+
+```bash
+cat azure-webhook.log | python loadtests/analyze_webhook_logs.py
+```
+
+`webhook_request.duration_ms` はWebhook受付・署名検証まで、`webhook_background.duration_ms` は予約登録・LINE応答までの時間です。後者のp95が前者の2倍を超える場合、DBまたはLINE APIが主なボトルネック候補です。
+
 ```sql
 SELECT COUNT(*) AS loadtest_reservations
 FROM reservations

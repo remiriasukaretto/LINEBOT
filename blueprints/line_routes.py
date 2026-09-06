@@ -37,6 +37,7 @@ from services.queue_service import (
 from validators import normalize_type_name, validate_type_name
 
 logger = logging.getLogger("line_routes")
+logger.setLevel(logging.INFO)
 
 handler = WebhookHandler(CHANNEL_SECRET)
 _WEBHOOK_EXECUTOR = ThreadPoolExecutor(
